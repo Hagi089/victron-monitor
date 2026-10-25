@@ -295,6 +295,25 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
         }
         rec.mfr.push(entry);
       });
+    } else if (ev.manufacturerData) {
+      /* Bluefy liefert die Herstellerdaten als ein Byte-Block, die ersten zwei Bytes sind die Herstellerkennung. */
+      var md = ev.manufacturerData;
+      var u = null;
+      if (md instanceof DataView) { u = new Uint8Array(md.buffer, md.byteOffset, md.byteLength); }
+      else if (md instanceof ArrayBuffer) { u = new Uint8Array(md); }
+      else if (md && md.buffer instanceof ArrayBuffer) { u = new Uint8Array(md.buffer, md.byteOffset || 0, md.byteLength); }
+      if (u && u.length >= 2) {
+        var company = u[0] | (u[1] << 8);
+        var rest = [];
+        for (var j = 2; j < u.length; j++) { rest.push((u[j] < 16 ? '0' : '') + u[j].toString(16)); }
+        var ent = { key: company, len: u.length - 2, hex: rest.join(' ') };
+        if (company === VICTRON_ID) {
+          rec.victron = true;
+          ent.prefixOk = u.length > 2 && u[2] === 0x10;
+          ent.typeByte = u.length > 5 ? u[5] : null;
+        }
+        rec.mfr.push(ent);
+      }
     }
     if (rec.count === 1) {
       log('Neu: ' + (rec.name || '(ohne Name)') + (rec.victron ? '  [Victron]' : ''));
