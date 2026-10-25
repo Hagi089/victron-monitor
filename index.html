@@ -225,6 +225,52 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
     return { text: out.join(' '), bytes: bytes };
   }
 
+  function bytesOf(v) {
+    var u = null;
+    if (v instanceof DataView) { u = new Uint8Array(v.buffer, v.byteOffset, v.byteLength); }
+    else if (v instanceof ArrayBuffer) { u = new Uint8Array(v); }
+    else if (v && v.buffer instanceof ArrayBuffer && typeof v.length === 'number') { u = new Uint8Array(v.buffer, v.byteOffset || 0, v.byteLength); }
+    if (!u) { return null; }
+    var out = [];
+    for (var i = 0; i < u.length; i++) { out.push((u[i] < 16 ? '0' : '') + u[i].toString(16)); }
+    return out.join(' ');
+  }
+
+  function plain(v, depth) {
+    var h = bytesOf(v);
+    if (h !== null) { return 'bytes[' + h + ']'; }
+    if (v === null || v === undefined) { return String(v); }
+    if (typeof v === 'function') { return 'function'; }
+    if (typeof v !== 'object') { return JSON.stringify(v); }
+    if (depth > 2) { return Object.prototype.toString.call(v); }
+    if (typeof v.forEach === 'function' && typeof v.size === 'number') {
+      var parts = [];
+      v.forEach(function (val, key) { parts.push(String(key) + ' => ' + plain(val, depth + 1)); });
+      return 'Map(' + v.size + ') {' + parts.join('; ') + '}';
+    }
+    if (Array.isArray(v)) { return '[' + v.map(function (x) { return plain(x, depth + 1); }).join(', ') + ']'; }
+    var keys = [];
+    for (var k in v) { keys.push(k); }
+    return Object.prototype.toString.call(v) + ' {' + keys.slice(0, 12).map(function (k2) {
+      var val;
+      try { val = plain(v[k2], depth + 1); } catch (e) { val = '?'; }
+      return k2 + ': ' + val;
+    }).join('; ') + '}';
+  }
+
+  function describeEvent(ev) {
+    var skip = { target: 1, currentTarget: 1, srcElement: 1, view: 1, path: 1, composedPath: 1, timeStamp: 1, isTrusted: 1, bubbles: 1, cancelable: 1, composed: 1, defaultPrevented: 1, eventPhase: 1, returnValue: 1, cancelBubble: 1, type: 1 };
+    var lines = [];
+    for (var k in ev) {
+      if (skip[k] || typeof ev[k] === 'function') { continue; }
+      var v;
+      try { v = plain(ev[k], 0); } catch (e) { v = 'Fehler: ' + e; }
+      if (k === 'device') { v = 'Gerät ' + (ev.device && ev.device.name ? ev.device.name : ''); }
+      lines.push(k + ' = ' + v);
+    }
+    return lines.join('\n');
+  }
+
   function onAdv(ev) {
     var dev = ev.device || {};
     var id = dev.id || dev.name || 'unbekannt';
@@ -234,6 +280,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
     }
     rec.count += 1;
     rec.last = Date.now();
+    if (rec.count === 1 || rec.count === 50) { try { rec.raw = describeEvent(ev); } catch (e) { rec.raw = 'Fehler: ' + e; } if (rec.count === 1) { log('Rohdaten Meldung 1:\n' + rec.raw); } }
     if (typeof ev.rssi === 'number') { rec.rssi = ev.rssi; }
     if (dev.name || ev.name) { rec.name = dev.name || ev.name; }
     rec.mfr = [];
@@ -324,6 +371,17 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
         row.appendChild(hex);
         card.appendChild(row);
       });
+      if (d.raw) {
+        var rawTitle = document.createElement('div');
+        rawTitle.className = 'mfr';
+        rawTitle.textContent = 'Rohdaten der Meldung (alle Felder, die der Browser liefert)';
+        var rawBox = document.createElement('div');
+        rawBox.className = 'hex';
+        rawBox.style.whiteSpace = 'pre-wrap';
+        rawBox.textContent = d.raw;
+        card.appendChild(rawTitle);
+        card.appendChild(rawBox);
+      }
       box.appendChild(card);
     });
   }
