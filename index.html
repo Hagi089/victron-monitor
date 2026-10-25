@@ -123,6 +123,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
     <div class="actions">
       <button id="btnA" type="button">Methode A: Umgebung scannen</button>
       <button id="btnB" type="button" class="secondary">Methode B: Gerät auswählen</button>
+      <button id="btnC" type="button" class="secondary">Methode C: nur Victron anzeigen</button>
     </div>
     <p class="status" id="status">Noch nichts gestartet. Teste zuerst Methode A. Klappt sie nicht, nimm Methode B.</p>
   </section>
@@ -328,9 +329,13 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
   }
 
   function explain(err) {
-    var n = err && err.name ? err.name : 'Fehler';
-    var m = err && err.message ? err.message : String(err);
-    return n + ': ' + m;
+    if (err && typeof err === 'object') {
+      var n = err.name || 'ohne Name';
+      var m = err.message || '';
+      var c = err.code !== undefined ? ' code=' + err.code : '';
+      return n + ': ' + m + c + ' [' + Object.prototype.toString.call(err) + ']';
+    }
+    return 'Wert ' + typeof err + ': ' + String(err);
   }
 
   var scanning = false;
@@ -374,6 +379,27 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
     });
   }
 
+  function startC() {
+    if (!navigator.bluetooth) { setStatus('Dieser Browser hat kein Web Bluetooth.'); return; }
+    log('Methode C: Auswahl mit Victron-Filter wird geöffnet');
+    navigator.bluetooth.requestDevice({ filters: [{ manufacturerData: [{ companyIdentifier: VICTRON_ID }] }] }).then(function (dev) {
+      log('Methode C: gewählt ' + (dev.name || dev.id));
+      if (typeof dev.watchAdvertisements !== 'function') {
+        setStatus('watchAdvertisements fehlt in diesem Browser.');
+        log('Methode C: watchAdvertisements fehlt');
+        return;
+      }
+      dev.addEventListener('advertisementreceived', onAdv);
+      return dev.watchAdvertisements().then(function () {
+        setStatus('Beobachtung läuft (Methode C) für ' + (dev.name || dev.id) + '.');
+        log('Methode C: Beobachtung läuft');
+      });
+    }).catch(function (e) {
+      setStatus('Methode C hat nicht geklappt: ' + explain(e));
+      log('Methode C Fehler: ' + explain(e));
+    });
+  }
+
   function copyLog() {
     var text = logLines.join('\n') + '\n\n' + JSON.stringify(Object.keys(devices).map(function (k) {
       var d = devices[k];
@@ -393,6 +419,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
 
   el('btnA').addEventListener('click', startA);
   el('btnB').addEventListener('click', startB);
+  el('btnC').addEventListener('click', startC);
   el('btnCopy').addEventListener('click', copyLog);
   el('onlyVictron').addEventListener('change', render);
   setInterval(function () { if (scanning || Object.keys(devices).length) { render(); } }, 3000);
