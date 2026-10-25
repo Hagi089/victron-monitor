@@ -103,13 +103,24 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
 .tiles.dense .metric .val { font-size: 21px; }
 .tiles.dense .tile-name { font-size: 16px; }
 .tiles.dense .note { margin-top: 6px; }
+.arr { display: none; gap: 8px; margin-top: 10px; }
+.arranging .arr { display: flex; }
+.arr button { flex: 1 1 0; min-height: 44px; padding: 6px 8px; }
+.arranging .tiles { touch-action: none; }
+.arr .handle { flex: 2 1 0; touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+.arranging .tile { outline: 2px dashed var(--line); outline-offset: -2px; }
+.tile.dragging { opacity: 0.55; outline: 2px dashed var(--accent); }
+#btnArrange[aria-pressed="true"] { color: var(--accent-fg); background: var(--accent); }
 </style>
 
 <div class="wrap">
   <header>
     <div class="topbar">
       <h1>Victron Monitor</h1>
-      <button id="btnAdd" type="button" class="secondary">Gerät hinzufügen</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="btnArrange" type="button" class="secondary">Anordnen</button>
+        <button id="btnAdd" type="button" class="secondary">Gerät hinzufügen</button>
+      </div>
     </div>
     <p class="lead" id="lead">Zeigt die Messwerte deiner Victron-Geräte live per Bluetooth. Die Schlüssel bleiben auf diesem iPad.</p>
   </header>
@@ -493,6 +504,17 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     ui.connect.addEventListener('click', function () { reconnect(rec); });
     tile.appendChild(ui.connect);
 
+    tile.dataset.id = rec.id;
+    var arr = document.createElement('div'); arr.className = 'arr';
+    var bPrev = document.createElement('button'); bPrev.type = 'button'; bPrev.className = 'secondary'; bPrev.textContent = '◀'; bPrev.setAttribute('aria-label', 'Nach vorne');
+    var bDrag = document.createElement('button'); bDrag.type = 'button'; bDrag.className = 'secondary handle'; bDrag.textContent = 'Ziehen';
+    var bNext = document.createElement('button'); bNext.type = 'button'; bNext.className = 'secondary'; bNext.textContent = '▶'; bNext.setAttribute('aria-label', 'Nach hinten');
+    arr.appendChild(bPrev); arr.appendChild(bDrag); arr.appendChild(bNext);
+    tile.appendChild(arr);
+    bPrev.addEventListener('click', function () { moveTile(tile, -1); });
+    bNext.addEventListener('click', function () { moveTile(tile, 1); });
+    startDrag(bDrag, tile);
+
     ui.metrics = document.createElement('div'); ui.metrics.className = 'metrics';
     ui.metricKey = '';
     ui.metricEls = [];
@@ -545,6 +567,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     });
 
     el('tiles').appendChild(tile);
+    applyOrder();
     var empty = el('emptyTiles'); if (empty) { empty.hidden = true; }
     var lead = el('lead'); if (lead) { lead.hidden = true; }
     setTimeout(layout, 0);
@@ -862,6 +885,63 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     function fallback() { ta.focus(); ta.select(); setStatus('Text markiert. Jetzt kopieren.'); }
     try { navigator.clipboard.writeText(text).then(function () { setStatus('Protokoll kopiert.'); }, fallback); } catch (e) { fallback(); }
   }
+
+  /* ---------- Anordnen ---------- */
+  function tileList() { return Array.prototype.slice.call(el('tiles').querySelectorAll('.tile')); }
+  function loadOrder() { try { return JSON.parse(localStorage.getItem('victron-order') || '[]') || []; } catch (e) { return []; } }
+  function saveOrder() {
+    var ids = tileList().map(function (t) { return t.dataset.id; });
+    try { localStorage.setItem('victron-order', JSON.stringify(ids)); } catch (e) { /* egal */ }
+  }
+  function applyOrder() {
+    var order = loadOrder();
+    var box = el('tiles');
+    tileList().map(function (t) {
+      var i = order.indexOf(t.dataset.id);
+      return { t: t, i: i < 0 ? 999 : i };
+    }).sort(function (a, b) { return a.i - b.i; }).forEach(function (x) { box.appendChild(x.t); });
+  }
+  function moveTile(tile, delta) {
+    var list = tileList();
+    var i = list.indexOf(tile);
+    var j = i + delta;
+    if (j < 0 || j >= list.length) { return; }
+    var box = el('tiles');
+    if (delta < 0) { box.insertBefore(tile, list[j]); } else { box.insertBefore(tile, list[j].nextSibling); }
+    saveOrder();
+  }
+  function startDrag(handle, tile) {
+    function move(e) {
+      var under = document.elementFromPoint(e.clientX, e.clientY);
+      var target = under && under.closest ? under.closest('.tile') : null;
+      if (!target || target === tile) { return; }
+      var list = tileList();
+      var box = el('tiles');
+      if (list.indexOf(target) < list.indexOf(tile)) { box.insertBefore(tile, target); }
+      else { box.insertBefore(tile, target.nextSibling); }
+    }
+    function end() {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+      tile.classList.remove('dragging');
+      saveOrder();
+    }
+    handle.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      tile.classList.add('dragging');
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', end);
+      document.addEventListener('pointercancel', end);
+    });
+  }
+  el('btnArrange').addEventListener('click', function () {
+    var on = !document.body.classList.contains('arranging');
+    document.body.classList.toggle('arranging', on);
+    this.setAttribute('aria-pressed', on ? 'true' : 'false');
+    this.textContent = on ? 'Fertig' : 'Anordnen';
+    if (!on) { saveOrder(); }
+  });
 
   function layout() {
     var t = el('tiles');
