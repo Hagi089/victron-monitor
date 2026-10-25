@@ -96,7 +96,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
 
   <div>
     <div class="actions"><button id="btnAdd" type="button">Gerät hinzufügen</button></div>
-    <p class="status" id="status" style="margin-top:10px">Nach einem Neuladen der Seite musst du die Geräte erneut hinzufügen. Die Schlüssel merkt sich die Seite.</p>
+    <p class="status" id="status" style="margin-top:10px">Die Seite merkt sich deine Geräte und Schlüssel.</p>
   </div>
 
   <details class="panel diag">
@@ -304,6 +304,14 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     head.appendChild(left); head.appendChild(ui.pill);
     tile.appendChild(head);
 
+    ui.connect = document.createElement('button');
+    ui.connect.type = 'button';
+    ui.connect.textContent = 'Verbinden';
+    ui.connect.style.marginTop = '12px';
+    ui.connect.style.width = '100%';
+    ui.connect.addEventListener('click', function () { reconnect(rec); });
+    tile.appendChild(ui.connect);
+
     ui.metrics = document.createElement('div'); ui.metrics.className = 'metrics';
     ui.pv = metric('PV-Leistung'); ui.vbat = metric('Batterie'); ui.ibat = metric('Ladestrom');
     ui.yield = metric('Ertrag heute'); ui.load = metric('Lastausgang');
@@ -373,6 +381,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     ui.sub.textContent = (rec.rssi !== null && rec.rssi !== undefined ? rec.rssi + ' dBm · ' : '') + (age === null ? 'noch keine Messdaten' : 'vor ' + age + ' s');
     var stale = age === null || age > 15;
     ui.tile.className = 'tile' + (stale ? ' stale' : '');
+    ui.connect.hidden = !(age === null || age > 30);
 
     var r = rec.readout;
     var ks = rec.keyState;
@@ -396,6 +405,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var msg = '', cls = 'note';
     if (ks === 'none' || ks === null || ks === undefined) {
       if (rec.pkt) { msg = 'Für dieses Gerät fehlt noch der Schlüssel. Trage ihn unten bei „Schlüssel“ ein.'; }
+      else if (!watched[rec.id]) { msg = 'Nicht verbunden. Tippe auf „Verbinden“.'; }
       else { msg = 'Warte auf die erste Meldung des Geräts.'; }
     } else if (ks === 'mismatch') {
       msg = 'Dieser Schlüssel passt nicht zum Gerät. Er muss mit ' + (rec.pkt.check < 16 ? '0' : '') + rec.pkt.check.toString(16) + ' beginnen.'; cls = 'note bad';
@@ -495,14 +505,68 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     return 'Wert ' + typeof err + ': ' + String(err);
   }
   var watched = {};
+  function loadKnown() {
+    try { return JSON.parse(localStorage.getItem('victron-known') || '[]') || []; } catch (e) { return []; }
+  }
+  function rememberDevice(dev) {
+    var list = loadKnown().filter(function (d) { return d.id !== dev.id; });
+    list.push({ id: dev.id, name: dev.name || '' });
+    try { localStorage.setItem('victron-known', JSON.stringify(list)); } catch (e) { /* egal */ }
+  }
+  function watchDevice(dev, how) {
+    if (typeof dev.watchAdvertisements !== 'function') { setStatus('Dieser Browser kann keine Meldungen beobachten.'); return Promise.resolve(); }
+    if (!watched[dev.id]) { dev.addEventListener('advertisementreceived', onAdv); watched[dev.id] = true; }
+    rememberDevice(dev);
+    var rec = devices[dev.id] || (devices[dev.id] = { id: dev.id, name: dev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {} });
+    rec.connecting = false;
+    updateTile(rec);
+    return dev.watchAdvertisements().then(function () {
+      log('Beobachtung läuft (' + how + '): ' + (dev.name || dev.id));
+    });
+  }
+  function autoConnect() {
+    var known = loadKnown();
+    known.forEach(function (k) {
+      if (!devices[k.id]) {
+        devices[k.id] = { id: k.id, name: k.name, rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {}, offline: true };
+        updateTile(devices[k.id]);
+      }
+    });
+    if (!navigator.bluetooth || typeof navigator.bluetooth.getDevices !== 'function') {
+      log('Automatisch verbinden: getDevices fehlt in diesem Browser');
+      if (known.length) { setStatus('Tippe bei deinem Gerät auf „Verbinden“.'); }
+      return;
+    }
+    navigator.bluetooth.getDevices().then(function (list) {
+      log('Automatisch verbinden: ' + list.length + ' gemerkte Geräte vom Browser');
+      if (!list.length && known.length) { setStatus('Der Browser hat sich kein Gerät gemerkt. Tippe bei deinem Gerät auf „Verbinden“.'); }
+      list.forEach(function (dev) {
+        watchDevice(dev, 'automatisch').catch(function (e) { log('Automatisch fehlgeschlagen: ' + explain(e)); });
+      });
+    }).catch(function (e) { log('getDevices Fehler: ' + explain(e)); });
+  }
+  function reconnect(rec) {
+    if (!navigator.bluetooth) { return; }
+    var opts = rec.name ? { filters: [{ name: rec.name }] } : { acceptAllDevices: true };
+    log('Verbinden mit ' + (rec.name || rec.id));
+    navigator.bluetooth.requestDevice(opts).then(function (dev) {
+      if (dev.id !== rec.id && devices[rec.id] && devices[rec.id].ui && !devices[dev.id]) {
+        /* Gerät hat neue Kennung: Kachel übernehmen */
+        devices[dev.id] = devices[rec.id]; devices[dev.id].id = dev.id; delete devices[rec.id];
+      }
+      return watchDevice(dev, 'Verbinden');
+    }).catch(function (e) {
+      log('Verbinden fehlgeschlagen: ' + explain(e));
+      setStatus('Verbinden hat nicht geklappt. Versuche „Gerät hinzufügen“.');
+    });
+  }
+
   function addDevice() {
     if (!navigator.bluetooth) { setStatus('Dieser Browser hat kein Web Bluetooth. Öffne die Seite in Bluefy.'); return; }
     log('Geräteauswahl wird geöffnet');
     navigator.bluetooth.requestDevice({ acceptAllDevices: true }).then(function (dev) {
       log('Gewählt: ' + (dev.name || dev.id));
-      if (typeof dev.watchAdvertisements !== 'function') { setStatus('Dieser Browser kann keine Meldungen beobachten.'); return; }
-      if (!watched[dev.id]) { dev.addEventListener('advertisementreceived', onAdv); watched[dev.id] = true; }
-      return dev.watchAdvertisements().then(function () {
+      return watchDevice(dev, 'hinzugefügt').then(function () {
         setStatus('Beobachtung läuft für ' + (dev.name || dev.id) + '. Weitere Geräte kannst du jederzeit hinzufügen.');
       });
     }).catch(function (e) {
@@ -526,6 +590,8 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var ok = false;
     try { ok = !!localStorage; } catch (e) { ok = false; }
     addCheck('Schlüssel speichern', ok ? 'ok' : 'warn', ok ? 'ja' : 'nein');
+    var gd = !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function');
+    addCheck('Automatisch verbinden (getDevices)', gd ? 'ok' : 'warn', gd ? 'ja' : 'nein');
   }
   function copyLog() {
     var text = logLines.join('\n');
@@ -543,5 +609,6 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
 
   systemCheck();
   log('Seite geladen');
+  autoConnect();
 })();
 </script>
