@@ -1,0 +1,403 @@
+<title>Victron Funktest</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: eine schmale Instrumenten-Spalte. Oben der Systemcheck, darunter die Scan-Knöpfe, unten die empfangenen Geräte. */
+:root {
+  --bg: #eef1ef;
+  --panel: #ffffff;
+  --fg: #14201f;
+  --muted: #5b6b69;
+  --line: #d3dbd8;
+  --accent: #0b5c9e;
+  --accent-fg: #ffffff;
+  --ok: #1b7a43;
+  --ok-bg: #dff1e6;
+  --warn: #8a5a00;
+  --warn-bg: #fbeccb;
+  --bad: #a3261f;
+  --bad-bg: #f8dcd9;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1514;
+    --panel: #162120;
+    --fg: #e6efed;
+    --muted: #93a6a3;
+    --line: #2a3b39;
+    --accent: #5aaef0;
+    --accent-fg: #06121c;
+    --ok: #6fd69a;
+    --ok-bg: #173826;
+    --warn: #f0c46a;
+    --warn-bg: #3b2e10;
+    --bad: #ff9a92;
+    --bad-bg: #411d1a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1514;
+  --panel: #162120;
+  --fg: #e6efed;
+  --muted: #93a6a3;
+  --line: #2a3b39;
+  --accent: #5aaef0;
+  --accent-fg: #06121c;
+  --ok: #6fd69a;
+  --ok-bg: #173826;
+  --warn: #f0c46a;
+  --warn-bg: #3b2e10;
+  --bad: #ff9a92;
+  --bad-bg: #411d1a;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-top: 20px;
+  padding-bottom: 32px;
+}
+.wrap { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+h1 { font-size: 24px; line-height: 1.15; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin: 0 0 8px; font-weight: 650; }
+p { margin: 0; }
+.lead { color: var(--muted); max-width: 60ch; margin-top: 6px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.checks li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
+.checks li:first-child { border-top: 0; padding-top: 0; }
+.checks li:last-child { padding-bottom: 0; }
+.checks .label { min-width: 0; }
+.checks .hint { display: block; color: var(--muted); font-size: 12.5px; }
+.pill { flex: none; font-size: 12.5px; font-weight: 650; padding: 3px 10px; border-radius: 999px; }
+.pill.ok { color: var(--ok); background: var(--ok-bg); }
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
+.pill.bad { color: var(--bad); background: var(--bad-bg); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+button {
+  font: inherit; font-weight: 650; color: var(--accent-fg); background: var(--accent);
+  border: 0; border-radius: 8px; padding: 12px 16px; min-height: 44px; flex: 1 1 200px;
+}
+button.secondary { color: var(--accent); background: transparent; border: 1.5px solid var(--accent); }
+button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+button:disabled { opacity: 0.45; }
+.status { margin-top: 10px; color: var(--muted); font-size: 13.5px; }
+.summary { display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline; justify-content: space-between; }
+.big { font-size: 34px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.big small { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }
+label.toggle { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13.5px; }
+.devices { display: flex; flex-direction: column; gap: 10px; }
+.dev { border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; background: var(--panel); padding: 12px; min-width: 0; }
+.dev.victron { border-left-color: var(--accent); }
+.dev-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.dev-name { font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
+.dev-meta { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.dev-id { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; margin-top: 2px; }
+.mfr { margin-top: 8px; font-size: 12.5px; }
+.mfr b { font-weight: 650; }
+.hex { font-family: var(--mono); font-size: 12px; background: var(--bg); border-radius: 6px; padding: 6px 8px; margin-top: 4px; overflow-x: auto; white-space: nowrap; }
+.empty { color: var(--muted); padding: 6px 0; }
+textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: var(--mono); font-size: 11.5px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Victron Funktest</h1>
+    <p class="lead">Prüft, ob dieser Browser die Bluetooth-Meldungen deiner Victron-Geräte empfangen kann. Schlüssel brauchst du dafür noch nicht.</p>
+  </header>
+
+  <section class="panel">
+    <h2>1. Systemcheck</h2>
+    <ul class="checks" id="checks"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>2. Suche starten</h2>
+    <div class="actions">
+      <button id="btnA" type="button">Methode A: Umgebung scannen</button>
+      <button id="btnB" type="button" class="secondary">Methode B: Gerät auswählen</button>
+    </div>
+    <p class="status" id="status">Noch nichts gestartet. Teste zuerst Methode A. Klappt sie nicht, nimm Methode B.</p>
+  </section>
+
+  <section class="panel">
+    <h2>3. Empfangen</h2>
+    <div class="summary">
+      <div class="big"><span id="nVictron">0</span><small>Victron-Geräte</small></div>
+      <label class="toggle" for="onlyVictron"><input type="checkbox" id="onlyVictron" checked> nur Victron zeigen</label>
+    </div>
+    <p class="status" id="others">Andere Bluetooth-Geräte in der Nähe: 0</p>
+    <div class="devices" id="devices" style="margin-top:12px"><p class="empty">Hier erscheinen die Geräte, sobald Meldungen eintreffen.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Protokoll</h2>
+    <textarea id="log" readonly></textarea>
+    <div class="actions" style="margin-top:10px">
+      <button id="btnCopy" type="button" class="secondary">Protokoll kopieren</button>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var VICTRON_ID = 0x02E1;
+  var TYPES = {
+    1: 'Solar-Laderegler', 2: 'Batteriemonitor', 3: 'Wechselrichter', 4: 'DC-DC-Wandler',
+    5: 'Smart Lithium', 8: 'AC-Ladegerät', 9: 'Smart Battery Protect', 10: 'Lynx Smart BMS',
+    12: 'VE.Bus', 13: 'DC-Energiezähler', 15: 'Orion XS'
+  };
+  var devices = {};
+  var logLines = [];
+  var el = function (id) { return document.getElementById(id); };
+
+  function log(msg) {
+    var t = new Date().toLocaleTimeString('de-DE');
+    logLines.push(t + '  ' + msg);
+    if (logLines.length > 200) { logLines.shift(); }
+    var ta = el('log');
+    ta.value = logLines.join('\n');
+    ta.scrollTop = ta.scrollHeight;
+  }
+
+  function setStatus(text) { el('status').textContent = text; }
+
+  function addCheck(label, hint, level, value) {
+    var li = document.createElement('li');
+    var left = document.createElement('div');
+    left.className = 'label';
+    left.appendChild(document.createTextNode(label));
+    if (hint) {
+      var h = document.createElement('span');
+      h.className = 'hint';
+      h.textContent = hint;
+      left.appendChild(h);
+    }
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + level;
+    pill.textContent = value;
+    li.appendChild(left);
+    li.appendChild(pill);
+    el('checks').appendChild(li);
+  }
+
+  function systemCheck() {
+    var hasBt = typeof navigator !== 'undefined' && !!navigator.bluetooth;
+    addCheck('Sichere Verbindung (https)', 'Web Bluetooth läuft nur darüber.', window.isSecureContext ? 'ok' : 'bad', window.isSecureContext ? 'ja' : 'nein');
+    addCheck('Web Bluetooth vorhanden', hasBt ? 'Dieser Browser kennt die Schnittstelle.' : 'Öffne die Seite im Browser Bluefy, nicht in Safari.', hasBt ? 'ok' : 'bad', hasBt ? 'ja' : 'nein');
+
+    var framed = false;
+    try { framed = window.top !== window.self; } catch (e) { framed = true; }
+    addCheck('Seite läuft in einem Rahmen', framed ? 'Rahmen können Bluetooth sperren.' : 'Direkt geöffnet.', framed ? 'warn' : 'ok', framed ? 'ja' : 'nein');
+
+    var policy = document.permissionsPolicy || document.featurePolicy;
+    var allowed = 'unbekannt';
+    var lvl = 'warn';
+    try {
+      if (policy && policy.allowsFeature) {
+        allowed = policy.allowsFeature('bluetooth') ? 'erlaubt' : 'gesperrt';
+        lvl = allowed === 'erlaubt' ? 'ok' : 'bad';
+      }
+    } catch (e) { /* bleibt unbekannt */ }
+    addCheck('Bluetooth im Rahmen erlaubt', 'Entscheidet, ob Methode A und B hier starten dürfen.', lvl, allowed);
+
+    var hasScan = hasBt && typeof navigator.bluetooth.requestLEScan === 'function';
+    addCheck('Umgebung scannen (Methode A)', 'Liest alle Meldungen in Reichweite.', hasScan ? 'ok' : 'warn', hasScan ? 'ja' : 'nein');
+
+    var hasWatch = typeof window.BluetoothDevice !== 'undefined' && 'watchAdvertisements' in window.BluetoothDevice.prototype;
+    addCheck('Gerät beobachten (Methode B)', 'Liest Meldungen eines gewählten Geräts.', hasWatch ? 'ok' : 'warn', hasWatch ? 'ja' : 'nein');
+  }
+
+  function toHex(dv) {
+    var bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    var out = [];
+    for (var i = 0; i < bytes.length; i++) {
+      out.push((bytes[i] < 16 ? '0' : '') + bytes[i].toString(16));
+    }
+    return { text: out.join(' '), bytes: bytes };
+  }
+
+  function onAdv(ev) {
+    var dev = ev.device || {};
+    var id = dev.id || dev.name || 'unbekannt';
+    var rec = devices[id];
+    if (!rec) {
+      rec = devices[id] = { id: id, name: dev.name || ev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: false };
+    }
+    rec.count += 1;
+    rec.last = Date.now();
+    if (typeof ev.rssi === 'number') { rec.rssi = ev.rssi; }
+    if (dev.name || ev.name) { rec.name = dev.name || ev.name; }
+    rec.mfr = [];
+    if (ev.manufacturerData && typeof ev.manufacturerData.forEach === 'function') {
+      ev.manufacturerData.forEach(function (dv, key) {
+        var h = toHex(dv);
+        var entry = { key: key, len: dv.byteLength, hex: h.text };
+        if (key === VICTRON_ID) {
+          rec.victron = true;
+          entry.prefixOk = h.bytes.length > 0 && h.bytes[0] === 0x10;
+          entry.typeByte = h.bytes.length > 3 ? h.bytes[3] : null;
+        }
+        rec.mfr.push(entry);
+      });
+    }
+    if (rec.count === 1) {
+      log('Neu: ' + (rec.name || '(ohne Name)') + (rec.victron ? '  [Victron]' : ''));
+    }
+    scheduleRender();
+  }
+
+  var pending = false;
+  function scheduleRender() {
+    if (pending) { return; }
+    pending = true;
+    setTimeout(function () { pending = false; render(); }, 400);
+  }
+
+  function hexKey(n) {
+    var s = n.toString(16).toUpperCase();
+    while (s.length < 4) { s = '0' + s; }
+    return '0x' + s;
+  }
+
+  function render() {
+    var list = Object.keys(devices).map(function (k) { return devices[k]; });
+    var vic = list.filter(function (d) { return d.victron; });
+    el('nVictron').textContent = String(vic.length);
+    el('others').textContent = 'Andere Bluetooth-Geräte in der Nähe: ' + (list.length - vic.length);
+    var shown = el('onlyVictron').checked ? vic : list;
+    shown.sort(function (a, b) {
+      if (a.victron !== b.victron) { return a.victron ? -1 : 1; }
+      return (b.rssi || -999) - (a.rssi || -999);
+    });
+    var box = el('devices');
+    box.textContent = '';
+    if (!shown.length) {
+      var p = document.createElement('p');
+      p.className = 'empty';
+      p.textContent = list.length ? 'Es kamen Meldungen, aber noch keine von Victron. Gerät näher heranhalten oder warten.' : 'Hier erscheinen die Geräte, sobald Meldungen eintreffen.';
+      box.appendChild(p);
+      return;
+    }
+    shown.forEach(function (d) {
+      var card = document.createElement('div');
+      card.className = 'dev' + (d.victron ? ' victron' : '');
+      var head = document.createElement('div');
+      head.className = 'dev-head';
+      var name = document.createElement('div');
+      name.className = 'dev-name';
+      name.textContent = d.name || '(ohne Namen)';
+      var meta = document.createElement('div');
+      meta.className = 'dev-meta';
+      meta.textContent = (d.rssi !== null ? d.rssi + ' dBm · ' : '') + d.count + ' Meldungen · vor ' + Math.max(0, Math.round((Date.now() - d.last) / 1000)) + ' s';
+      head.appendChild(name);
+      head.appendChild(meta);
+      card.appendChild(head);
+      var idl = document.createElement('div');
+      idl.className = 'dev-id';
+      idl.textContent = d.id;
+      card.appendChild(idl);
+      d.mfr.forEach(function (m) {
+        var row = document.createElement('div');
+        row.className = 'mfr';
+        var title = document.createElement('div');
+        var label = hexKey(m.key) + (m.key === VICTRON_ID ? ' (Victron)' : '') + ' · ' + m.len + ' Byte';
+        if (m.key === VICTRON_ID) {
+          label += m.prefixOk ? ' · Instant Readout erkannt' : ' · Präfix unerwartet';
+          if (m.typeByte !== null) {
+            label += ' · Typ ' + (TYPES[m.typeByte] || ('0x' + m.typeByte.toString(16)));
+          }
+        }
+        title.textContent = label;
+        var hex = document.createElement('div');
+        hex.className = 'hex';
+        hex.textContent = m.hex;
+        row.appendChild(title);
+        row.appendChild(hex);
+        card.appendChild(row);
+      });
+      box.appendChild(card);
+    });
+  }
+
+  function explain(err) {
+    var n = err && err.name ? err.name : 'Fehler';
+    var m = err && err.message ? err.message : String(err);
+    return n + ': ' + m;
+  }
+
+  var scanning = false;
+  function startA() {
+    if (!navigator.bluetooth) { setStatus('Dieser Browser hat kein Web Bluetooth. Öffne die Seite in Bluefy.'); log('Abbruch: kein navigator.bluetooth'); return; }
+    if (typeof navigator.bluetooth.requestLEScan !== 'function') {
+      setStatus('Methode A gibt es in diesem Browser nicht. Nimm Methode B.');
+      log('Methode A: requestLEScan fehlt');
+      return;
+    }
+    log('Methode A: Scan wird angefragt');
+    navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true }).then(function () {
+      navigator.bluetooth.addEventListener('advertisementreceived', onAdv);
+      scanning = true;
+      setStatus('Scan läuft (Methode A). Halte das iPad in die Nähe deiner Victron-Geräte.');
+      log('Methode A: Scan läuft');
+    }).catch(function (e) {
+      setStatus('Methode A hat nicht geklappt: ' + explain(e));
+      log('Methode A Fehler: ' + explain(e));
+    });
+  }
+
+  function startB() {
+    if (!navigator.bluetooth) { setStatus('Dieser Browser hat kein Web Bluetooth. Öffne die Seite in Bluefy.'); log('Abbruch: kein navigator.bluetooth'); return; }
+    log('Methode B: Geräteauswahl wird geöffnet');
+    navigator.bluetooth.requestDevice({ acceptAllDevices: true }).then(function (dev) {
+      log('Methode B: gewählt ' + (dev.name || dev.id));
+      if (typeof dev.watchAdvertisements !== 'function') {
+        setStatus('Methode B gibt es in diesem Browser nicht.');
+        log('Methode B: watchAdvertisements fehlt');
+        return;
+      }
+      dev.addEventListener('advertisementreceived', onAdv);
+      return dev.watchAdvertisements().then(function () {
+        setStatus('Beobachtung läuft (Methode B) für ' + (dev.name || dev.id) + '.');
+        log('Methode B: Beobachtung läuft');
+      });
+    }).catch(function (e) {
+      setStatus('Methode B hat nicht geklappt: ' + explain(e));
+      log('Methode B Fehler: ' + explain(e));
+    });
+  }
+
+  function copyLog() {
+    var text = logLines.join('\n') + '\n\n' + JSON.stringify(Object.keys(devices).map(function (k) {
+      var d = devices[k];
+      return { name: d.name, id: d.id, rssi: d.rssi, count: d.count, victron: d.victron, mfr: d.mfr };
+    }), null, 1);
+    var ta = el('log');
+    function fallback() {
+      ta.value = text;
+      ta.focus();
+      ta.select();
+      setStatus('Text markiert. Jetzt kopieren oder ein Foto vom Bildschirm schicken.');
+    }
+    try {
+      navigator.clipboard.writeText(text).then(function () { setStatus('Protokoll kopiert.'); }, fallback);
+    } catch (e) { fallback(); }
+  }
+
+  el('btnA').addEventListener('click', startA);
+  el('btnB').addEventListener('click', startB);
+  el('btnCopy').addEventListener('click', copyLog);
+  el('onlyVictron').addEventListener('change', render);
+  setInterval(function () { if (scanning || Object.keys(devices).length) { render(); } }, 3000);
+
+  systemCheck();
+  log('Seite geladen');
+})();
+</script>
