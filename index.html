@@ -313,6 +313,11 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
           ent.typeByte = u.length > 5 ? u[5] : null;
         }
         rec.mfr.push(ent);
+        var tk = (u[2] < 16 ? '0' : '') + u[2].toString(16) + ' / ' + (u.length - 2) + ' Byte';
+        rec.types = rec.types || {};
+        var tr = rec.types[tk] || (rec.types[tk] = { n: 0, hex: '' });
+        tr.n += 1;
+        tr.hex = ent.hex;
       }
     }
     if (rec.count === 1) {
@@ -390,6 +395,20 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
         row.appendChild(hex);
         card.appendChild(row);
       });
+      if (d.types) {
+        var tt = document.createElement('div');
+        tt.className = 'mfr';
+        var tb = document.createElement('b');
+        tb.textContent = 'Gesehene Paket-Typen (erstes Byte / Länge nach der Herstellerkennung)';
+        tt.appendChild(tb);
+        Object.keys(d.types).sort().forEach(function (k) {
+          var line = document.createElement('div');
+          line.className = 'hex';
+          line.textContent = k + '  ·  ' + d.types[k].n + 'x  ·  ' + d.types[k].hex;
+          tt.appendChild(line);
+        });
+        card.appendChild(tt);
+      }
       if (d.raw) {
         var rawTitle = document.createElement('div');
         rawTitle.className = 'mfr';
