@@ -97,6 +97,12 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
   .metric .val { font-size: 32px; }
   .metrics { gap: 10px; }
 }
+.tiles.dense .tile { padding: 10px; }
+.tiles.dense .metrics { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); gap: 6px; margin-top: 6px; }
+.tiles.dense .metric { padding: 6px 8px; }
+.tiles.dense .metric .val { font-size: 21px; }
+.tiles.dense .tile-name { font-size: 16px; }
+.tiles.dense .note { margin-top: 6px; }
 </style>
 
 <div class="wrap">
@@ -270,6 +276,67 @@ function decodeAny(type, b) {
   if (type === 0x02 && b.length >= 15) { return decodeBattery(b); }
   if (type === 0x08 && b.length >= 13) { return decodeCharger(b); }
   return null;
+}
+
+/* JBD-BMS (Xiaoxiang, u. a. in LANGZEIT-Akkus). Antwortrahmen: DD cmd status len data... chkH chkL 77 */
+var JBD_REQ_BASIC = [0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77];
+var JBD_REQ_CELLS = [0xDD, 0xA5, 0x04, 0x00, 0xFF, 0xFC, 0x77];
+function JbdAssembler() { this.buf = []; }
+JbdAssembler.prototype.push = function (bytes) {
+  var out = [];
+  for (var i = 0; i < bytes.length; i++) { this.buf.push(bytes[i]); }
+  for (;;) {
+    while (this.buf.length && this.buf[0] !== 0xDD) { this.buf.shift(); }
+    if (this.buf.length < 4) { break; }
+    var need = 4 + this.buf[3] + 3;
+    if (this.buf.length < need) { break; }
+    var f = this.buf.slice(0, need);
+    this.buf = this.buf.slice(need);
+    if (f[need - 1] === 0x77) { out.push({ cmd: f[1], status: f[2], data: f.slice(4, 4 + f[3]) }); }
+  }
+  if (this.buf.length > 512) { this.buf = []; }
+  return out;
+};
+function u16(d, o) { return (d[o] << 8) | d[o + 1]; }
+function s16(d, o) { var v = u16(d, o); return v >= 0x8000 ? v - 0x10000 : v; }
+function decodeJbdBasic(d) {
+  if (d.length < 23) { return null; }
+  var r = {
+    v: u16(d, 0) / 100, i: s16(d, 2) / 100, rem: u16(d, 4) / 100, nom: u16(d, 6) / 100,
+    cycles: u16(d, 8), prot: u16(d, 16), soc: d[19], fet: d[20], cells: d[21], temps: []
+  };
+  for (var k = 0; k < d[22] && 24 + 2 * k < d.length; k++) { r.temps.push((u16(d, 23 + 2 * k) - 2731) / 10); }
+  return r;
+}
+function decodeJbdCells(d) {
+  var c = [];
+  for (var o = 0; o + 1 < d.length; o += 2) { c.push(u16(d, o) / 1000); }
+  return c;
+}
+var JBD_PROT = ['Zelle Überspannung', 'Zelle Unterspannung', 'Akku Überspannung', 'Akku Unterspannung',
+  'Laden zu warm', 'Laden zu kalt', 'Entladen zu warm', 'Entladen zu kalt', 'Ladestrom zu hoch',
+  'Entladestrom zu hoch', 'Kurzschluss', 'BMS-Fehler', 'MOSFET gesperrt'];
+function jbdView(b, cells) {
+  var m = [];
+  m.push(['Ladezustand', String(b.soc), '%']);
+  m.push(['Batterie', fmtDE(b.v, 2), 'V']);
+  m.push(['Strom', (b.i > 0 ? '+' : '') + fmtDE(b.i, 2), 'A']);
+  m.push(['Leistung', (b.i > 0 ? '+' : '') + fmtDE(b.i * b.v, 0), 'W']);
+  m.push(['Rest von ' + fmtDE(b.nom, 0) + ' Ah', fmtDE(b.rem, 1), 'Ah']);
+  if (b.temps.length) { m.push(['Temperatur', fmtDE(Math.max.apply(null, b.temps), 1), '°C']); }
+  if (cells && cells.length) {
+    var mn = Math.min.apply(null, cells), mx = Math.max.apply(null, cells);
+    m.push(['Zelle min', fmtDE(mn, 3), 'V']);
+    m.push(['Zelldifferenz', fmtDE((mx - mn) * 1000, 0), 'mV']);
+  }
+  var alarms = [];
+  JBD_PROT.forEach(function (t, k) { if (b.prot & (1 << k)) { alarms.push(t); } });
+  if (!(b.fet & 1)) { alarms.push('Laden abgeschaltet'); }
+  if (!(b.fet & 2)) { alarms.push('Entladen abgeschaltet'); }
+  var st, lvl;
+  if (Math.abs(b.i) < 0.05) { st = 'Ruhe'; lvl = ''; } else if (b.i > 0) { st = 'Lädt'; lvl = 'ok'; } else { st = 'Entlädt'; lvl = 'warn'; }
+  if (b.soc < 20) { lvl = 'bad'; }
+  return { stateText: st, stateLevel: lvl, alarm: alarms.join(' · '), info: b.cycles + ' Ladezyklen', plausible: true, check: '', metrics: m };
 }
 
 function counterBlock(iv, i) {
@@ -533,8 +600,18 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       msg = 'Gerätetyp 0x' + rec.unsupported.toString(16) + ' wird noch nicht ausgewertet.'; cls = 'note';
       ui.pill.textContent = 'Typ 0x' + rec.unsupported.toString(16);
     }
+    if (rec.kind === 'bms') {
+      ui.keyBox.hidden = true;
+      if (rec.bmsMsg) { msg = rec.bmsMsg; cls = 'note'; }
+      else if (r && !r.alarm) { msg = r.info; cls = 'note'; }
+      else if (!watched[rec.id]) { msg = 'Nicht verbunden. Tippe auf „Verbinden“.'; cls = 'note'; }
+      else { msg = ''; }
+      if (!msg && !(r && r.alarm)) { ui.note.textContent = ''; }
+    }
     if (msg) { ui.note.className = cls; ui.note.textContent = msg; }
+    if (rec.kind === 'bms') { return; }
 
+    ui.keyBox.hidden = ks === 'ok';
     var needKey = !(ks === 'ok');
     if (needKey && rec.pkt && !rec.keyOpened) { ui.keyBox.open = true; rec.keyOpened = true; }
     if (ks === 'ok' && rec.keyOpened) { ui.keyBox.open = false; rec.keyOpened = false; }
@@ -624,6 +701,76 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   function loadKnown() {
     try { return JSON.parse(localStorage.getItem('victron-known') || '[]') || []; } catch (e) { return []; }
   }
+  function isBms(name) { return /^(DP\d|SP\d|xiaoxiang|JBD|LZ)/i.test(name || ''); }
+  var BMS_OPTS = [0xff00];
+  function startDevice(dev, how) { return isBms(dev.name) ? connectBms(dev, how) : watchDevice(dev, how); }
+
+  function connectBms(dev, how) {
+    rememberDevice(dev);
+    var rec = devices[dev.id] || (devices[dev.id] = { id: dev.id, name: dev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {} });
+    rec.kind = 'bms';
+    rec.dev = dev;
+    rec.bmsMsg = 'Verbinde mit dem Akku …';
+    watched[dev.id] = true;
+    updateTile(rec);
+    if (!dev.gatt) { rec.bmsMsg = 'Dieser Browser kann sich nicht mit dem Akku verbinden.'; updateTile(rec); return Promise.resolve(); }
+    if (!rec.onDisc) {
+      rec.onDisc = function () {
+        clearInterval(rec.poll); rec.poll = null;
+        log('Akku getrennt: ' + (dev.name || dev.id));
+        rec.bmsMsg = 'Verbindung zum Akku verloren, versuche es erneut …';
+        updateTile(rec);
+        setTimeout(function () { if (!rec.poll) { connectBms(dev, 'erneut').catch(function () {}); } }, 5000);
+      };
+      dev.addEventListener('gattserverdisconnected', rec.onDisc);
+    }
+    var asm = new JbdAssembler();
+    var tx;
+    return dev.gatt.connect().then(function (server) {
+      return server.getPrimaryService(0xff00);
+    }).then(function (svc) {
+      return Promise.all([svc.getCharacteristic(0xff01), svc.getCharacteristic(0xff02)]);
+    }).then(function (ch) {
+      tx = ch[1];
+      ch[0].addEventListener('characteristicvaluechanged', function (ev) {
+        var v = ev.target.value;
+        var bytes = Array.prototype.slice.call(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+        asm.push(bytes).forEach(function (f) {
+          if (f.status !== 0) { return; }
+          if (f.cmd === 0x03) { rec.jbdBasic = decodeJbdBasic(f.data); }
+          if (f.cmd === 0x04) { rec.jbdCells = decodeJbdCells(f.data); }
+          if (rec.jbdBasic) {
+            rec.readout = jbdView(rec.jbdBasic, rec.jbdCells);
+            rec.keyState = 'ok';
+            rec.unsupported = null;
+            rec.pktAt = Date.now();
+            rec.bmsMsg = '';
+            updateTile(rec);
+          }
+        });
+      });
+      return ch[0].startNotifications();
+    }).then(function () {
+      log('Akku verbunden (' + how + '): ' + (dev.name || dev.id));
+      rec.bmsMsg = 'Verbunden, warte auf Daten …';
+      updateTile(rec);
+      var n = 0;
+      var send = function () {
+        var req = new Uint8Array(n % 2 === 0 ? JBD_REQ_BASIC : JBD_REQ_CELLS);
+        n++;
+        var w = tx.writeValueWithoutResponse ? tx.writeValueWithoutResponse(req) : tx.writeValue(req);
+        w.catch(function (e) { log('Akku Anfrage: ' + explain(e)); });
+      };
+      clearInterval(rec.poll);
+      send();
+      rec.poll = setInterval(send, 1500);
+    }).catch(function (e) {
+      log('Akku Verbindung: ' + explain(e));
+      rec.bmsMsg = 'Keine Verbindung zum Akku. Ist die LANGZEIT-App noch verbunden? Dann dort trennen und hier auf „Verbinden“ tippen.';
+      updateTile(rec);
+    });
+  }
+
   function rememberDevice(dev) {
     var list = loadKnown().filter(function (d) { return d.id !== dev.id; });
     list.push({ id: dev.id, name: dev.name || '' });
@@ -644,7 +791,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var known = loadKnown();
     known.forEach(function (k) {
       if (!devices[k.id]) {
-        devices[k.id] = { id: k.id, name: k.name, rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {}, offline: true };
+        devices[k.id] = { id: k.id, name: k.name, rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {}, offline: true, kind: isBms(k.name) ? 'bms' : '' };
         updateTile(devices[k.id]);
       }
     });
@@ -657,20 +804,20 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       log('Automatisch verbinden: ' + list.length + ' gemerkte Geräte vom Browser');
       if (!list.length && known.length) { setStatus('Der Browser hat sich kein Gerät gemerkt. Tippe bei deinem Gerät auf „Verbinden“.'); }
       list.forEach(function (dev) {
-        watchDevice(dev, 'automatisch').catch(function (e) { log('Automatisch fehlgeschlagen: ' + explain(e)); });
+        startDevice(dev, 'automatisch').catch(function (e) { log('Automatisch fehlgeschlagen: ' + explain(e)); });
       });
     }).catch(function (e) { log('getDevices Fehler: ' + explain(e)); });
   }
   function reconnect(rec) {
     if (!navigator.bluetooth) { return; }
-    var opts = rec.name ? { filters: [{ name: rec.name }] } : { acceptAllDevices: true };
+    var opts = rec.name ? { filters: [{ name: rec.name }], optionalServices: BMS_OPTS } : { acceptAllDevices: true, optionalServices: BMS_OPTS };
     log('Verbinden mit ' + (rec.name || rec.id));
     navigator.bluetooth.requestDevice(opts).then(function (dev) {
       if (dev.id !== rec.id && devices[rec.id] && devices[rec.id].ui && !devices[dev.id]) {
         /* Gerät hat neue Kennung: Kachel übernehmen */
         devices[dev.id] = devices[rec.id]; devices[dev.id].id = dev.id; delete devices[rec.id];
       }
-      return watchDevice(dev, 'Verbinden');
+      return startDevice(dev, 'Verbinden');
     }).catch(function (e) {
       log('Verbinden fehlgeschlagen: ' + explain(e));
       setStatus('Verbinden hat nicht geklappt. Versuche „Gerät hinzufügen“.');
@@ -680,9 +827,9 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   function addDevice() {
     if (!navigator.bluetooth) { setStatus('Dieser Browser hat kein Web Bluetooth. Öffne die Seite in Bluefy.'); return; }
     log('Geräteauswahl wird geöffnet');
-    navigator.bluetooth.requestDevice({ acceptAllDevices: true }).then(function (dev) {
+    navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: BMS_OPTS }).then(function (dev) {
       log('Gewählt: ' + (dev.name || dev.id));
-      return watchDevice(dev, 'hinzugefügt').then(function () {
+      return startDevice(dev, 'hinzugefügt').then(function () {
         setStatus('Beobachtung läuft für ' + (dev.name || dev.id) + '. Weitere Geräte kannst du jederzeit hinzufügen.');
       });
     }).catch(function (e) {
@@ -725,6 +872,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var h = window.innerHeight - top - 10;
     t.style.height = Math.max(h, rows * 200) + 'px';
     t.style.gridTemplateRows = 'repeat(' + rows + ', minmax(0, 1fr))';
+    t.classList.toggle('dense', rows >= 3);
   }
   window.addEventListener('resize', layout);
   window.addEventListener('orientationchange', function () { setTimeout(layout, 300); });
