@@ -225,6 +225,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   /* ---------- Victron-Paket ---------- */
   function handleVictron(rec, b) {
     if (b.length < 9 || b[0] !== 0x10) { return; }
+    rec.lastBytes = b;
     rec.pkt = { model: b[2] | (b[3] << 8), type: b[4], iv: b[5] | (b[6] << 8), check: b[7], len: b.length - 8 };
     rec.pktAt = Date.now();
     var hex = findKey(rec);
@@ -256,6 +257,25 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       log('Entschlüsselung: ' + e);
       updateTile(rec);
     });
+  }
+
+  function testKey(rec, hex, out) {
+    var b = rec.lastBytes;
+    if (!b || !subtle) { out.className = 'note'; out.textContent = '32 Zeichen. Prüfen geht erst, wenn eine Meldung des Geräts da ist.'; return; }
+    if (parseInt(hex.substr(0, 2), 16) !== b[7]) { out.className = 'note bad'; out.textContent = 'Passt nicht: Der Schlüssel muss mit ' + b[7].toString(16) + ' beginnen.'; return; }
+    cryptoKeyFor(hex).then(function (ck) {
+      return decryptPayload(subtle, ck, b[5] | (b[6] << 8), b.slice(8));
+    }).then(function (plain) {
+      var r = decodeSolar(plain);
+      var plausible = b[4] !== 0x01 || (r.vBat > 5 && r.vBat < 70 && CHARGE_STATE[bitsLE(plain, 0, 8)] && r.pvW < 5000 && Math.abs(r.iBat) < 200);
+      if (plausible) {
+        out.className = 'note ok';
+        out.textContent = b[4] === 0x01 ? 'Passt: Batterie ' + fmt(r.vBat, 2) + ' V. Jetzt Speichern tippen.' : 'Sieht gut aus. Jetzt Speichern tippen.';
+      } else {
+        out.className = 'note bad';
+        out.textContent = 'Ergibt unsinnige Werte, vermutlich vertippt. Prüfe besonders 0 und o, b und 6, 8 und B.';
+      }
+    }).catch(function (e) { out.className = 'note bad'; out.textContent = 'Prüfen fehlgeschlagen: ' + e; });
   }
 
   /* ---------- Kacheln ---------- */
@@ -315,6 +335,16 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     ui.keyBox.appendChild(ui.keyMsg);
     tile.appendChild(ui.keyBox);
 
+    ui.input.addEventListener('input', function () {
+      var raw = String(ui.input.value || '').replace(/[^0-9a-fA-F]/g, '');
+      if (raw.length < 32) {
+        ui.keyMsg.className = 'note';
+        ui.keyMsg.textContent = raw.length + ' von 32 Zeichen' + (raw.length >= 2 && rec.pkt && parseInt(raw.substr(0, 2), 16) !== rec.pkt.check ? ' · Anfang passt nicht, er muss mit ' + rec.pkt.check.toString(16) + ' beginnen' : '');
+        return;
+      }
+      if (raw.length > 32) { ui.keyMsg.className = 'note bad'; ui.keyMsg.textContent = raw.length + ' Zeichen, das sind zu viele.'; return; }
+      testKey(rec, raw.toLowerCase(), ui.keyMsg);
+    });
     ui.save.addEventListener('click', function () {
       var hex = cleanKey(ui.input.value);
       if (!hex) { ui.keyMsg.className = 'note bad'; ui.keyMsg.textContent = 'Der Schlüssel braucht genau 32 Zeichen aus 0-9 und a-f.'; return; }
