@@ -159,6 +159,106 @@ function decodeSolar(b) {
   };
 }
 
+function fmtDE(n, d) { return n.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+
+/* Einheitliche Form: { stateText, stateLevel, alarm, plausible, metrics: [[Label, Text, Einheit], ...] } */
+function decodeSolarView(b) {
+  var r = decodeSolar(b);
+  var m = [
+    ['PV-Leistung', fmtDE(r.pvW, 0), 'W'],
+    ['Batterie', fmtDE(r.vBat, 2), 'V'],
+    ['Ladestrom', fmtDE(r.iBat, 1), 'A'],
+    ['Ertrag heute', fmtDE(r.yieldWh / 1000, 2), 'kWh']
+  ];
+  if (r.loadA !== null) { m.push(['Lastausgang', fmtDE(r.loadA, 1), 'A']); }
+  return {
+    stateText: r.stateText, stateLevel: r.stateLevel,
+    alarm: r.error ? 'Fehlercode ' + r.error : '',
+    plausible: r.vBat > 5 && r.vBat < 70 && !!CHARGE_STATE[bitsLE(b, 0, 8)] && r.pvW < 5000 && Math.abs(r.iBat) < 200,
+    check: 'Batterie ' + fmtDE(r.vBat, 2) + ' V',
+    metrics: m
+  };
+}
+
+/* Batteriemonitor (SmartShunt, BMV), Datensatztyp 0x02 */
+function decodeBattery(b) {
+  var ttg = bitsLE(b, 0, 16);
+  var v = signed(bitsLE(b, 16, 16), 16) / 100;
+  var alarm = bitsLE(b, 32, 16);
+  var aux = bitsLE(b, 48, 16);
+  var auxMode = bitsLE(b, 64, 2);
+  var iRaw = bitsLE(b, 66, 22);
+  var cRaw = bitsLE(b, 88, 20);
+  var socRaw = bitsLE(b, 108, 10);
+  var i = iRaw === 0x1FFFFF ? null : signed(iRaw, 22) / 1000;
+  var soc = socRaw === 0x3FF ? null : socRaw / 10;
+  var consumed = cRaw === 0xFFFFF ? null : -cRaw / 10;
+  var m = [];
+  m.push(['Ladezustand', soc === null ? '–' : fmtDE(soc, 1), soc === null ? '' : '%']);
+  m.push(['Batterie', fmtDE(v, 2), 'V']);
+  if (i !== null) {
+    m.push(['Strom', (i > 0 ? '+' : '') + fmtDE(i, 2), 'A']);
+    m.push(['Leistung', (i > 0 ? '+' : '') + fmtDE(i * v, 0), 'W']);
+  }
+  if (consumed !== null) { m.push(['Verbraucht', fmtDE(consumed, 1), 'Ah']); }
+  if (ttg === 0xFFFF) { m.push(['Restlaufzeit', '∞', '']); }
+  else { m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']); }
+  if (auxMode === 0 && aux !== 0xFFFF) { m.push(['Starterbatterie', fmtDE(signed(aux, 16) / 100, 2), 'V']); }
+  if (auxMode === 1 && aux !== 0xFFFF) { m.push(['Mittelpunkt', fmtDE(aux / 100, 2), 'V']); }
+  if (auxMode === 2 && aux !== 0xFFFF) { m.push(['Temperatur', fmtDE(aux / 100 - 273.15, 1), '°C']); }
+  var st, lvl;
+  if (i === null || Math.abs(i) < 0.05) { st = 'Ruhe'; lvl = ''; }
+  else if (i > 0) { st = 'Lädt'; lvl = 'ok'; }
+  else { st = 'Entlädt'; lvl = 'warn'; }
+  if (soc !== null && soc < 20) { lvl = 'bad'; }
+  return {
+    stateText: st, stateLevel: lvl,
+    alarm: alarm ? 'Alarm aktiv (Code ' + alarm + ')' : '',
+    plausible: v > 5 && v < 70 && (soc === null || soc <= 100) && (i === null || Math.abs(i) < 1000),
+    check: 'Batterie ' + fmtDE(v, 2) + ' V' + (soc !== null ? ', ' + fmtDE(soc, 0) + ' %' : ''),
+    metrics: m
+  };
+}
+
+/* AC-Ladegerät (Blue Smart IP65/IP67/IP22), Datensatztyp 0x08 */
+function decodeCharger(b) {
+  var state = bitsLE(b, 0, 8);
+  var err = bitsLE(b, 8, 8);
+  var outs = [];
+  for (var k = 0; k < 3; k++) {
+    var vr = bitsLE(b, 16 + k * 24, 13);
+    var ir = bitsLE(b, 29 + k * 24, 11);
+    outs.push({ v: vr === 0x1FFF ? null : vr / 100, i: ir === 0x7FF ? null : ir / 10 });
+  }
+  var tRaw = bitsLE(b, 88, 7);
+  var acRaw = bitsLE(b, 95, 9);
+  var st = CHARGE_STATE[state] || ['Zustand ' + state, 'warn'];
+  var m = [];
+  outs.forEach(function (o, idx) {
+    var suffix = idx === 0 ? '' : ' ' + (idx + 1);
+    if (o.v !== null) { m.push(['Batterie' + suffix, fmtDE(o.v, 2), 'V']); }
+    if (o.i !== null) { m.push(['Ladestrom' + suffix, fmtDE(o.i, 1), 'A']); }
+  });
+  if (outs[0].v !== null && outs[0].i !== null) { m.push(['Leistung', fmtDE(outs[0].v * outs[0].i, 0), 'W']); }
+  if (tRaw !== 0x7F) { m.push(['Temperatur', fmtDE(tRaw - 40, 0), '°C']); }
+  if (acRaw !== 0x1FF) { m.push(['Netzstrom', fmtDE(acRaw / 10, 1), 'A']); }
+  var v1 = outs[0].v;
+  return {
+    stateText: st[0], stateLevel: st[1],
+    alarm: err ? 'Fehlercode ' + err : '',
+    plausible: (v1 === null || (v1 > 5 && v1 < 70)) && !!CHARGE_STATE[state],
+    check: v1 === null ? st[0] : 'Batterie ' + fmtDE(v1, 2) + ' V',
+    metrics: m
+  };
+}
+
+function decodeAny(type, b) {
+  if (type === 0x01 && b.length >= 12) { return decodeSolarView(b); }
+  if (type === 0x02 && b.length >= 15) { return decodeBattery(b); }
+  if (type === 0x08 && b.length >= 13) { return decodeCharger(b); }
+  return null;
+}
+
 function counterBlock(iv, i) {
   var c = new Uint8Array(16);
   c[0] = iv & 255; c[1] = (iv >> 8) & 255;
@@ -241,8 +341,9 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       return decryptPayload(subtle, ck, iv, enc);
     }).then(function (plain) {
       rec.keyState = 'ok';
-      if (type === 0x01 && plain.length >= 12) {
-        rec.readout = decodeSolar(plain);
+      var view = decodeAny(type, plain);
+      if (view) {
+        rec.readout = view;
         rec.readoutAt = Date.now();
         rec.unsupported = null;
       } else {
@@ -266,11 +367,11 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     cryptoKeyFor(hex).then(function (ck) {
       return decryptPayload(subtle, ck, b[5] | (b[6] << 8), b.slice(8));
     }).then(function (plain) {
-      var r = decodeSolar(plain);
-      var plausible = b[4] !== 0x01 || (r.vBat > 5 && r.vBat < 70 && CHARGE_STATE[bitsLE(plain, 0, 8)] && r.pvW < 5000 && Math.abs(r.iBat) < 200);
+      var r = decodeAny(b[4], plain);
+      var plausible = !r || r.plausible;
       if (plausible) {
         out.className = 'note ok';
-        out.textContent = b[4] === 0x01 ? 'Passt: Batterie ' + fmt(r.vBat, 2) + ' V. Jetzt Speichern tippen.' : 'Sieht gut aus. Jetzt Speichern tippen.';
+        out.textContent = r ? 'Passt: ' + r.check + '. Jetzt Speichern tippen.' : 'Erster Teil passt. Jetzt Speichern tippen.';
       } else {
         out.className = 'note bad';
         out.textContent = 'Ergibt unsinnige Werte, vermutlich vertippt. Prüfe besonders 0 und o, b und 6, 8 und B.';
@@ -313,9 +414,8 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     tile.appendChild(ui.connect);
 
     ui.metrics = document.createElement('div'); ui.metrics.className = 'metrics';
-    ui.pv = metric('PV-Leistung'); ui.vbat = metric('Batterie'); ui.ibat = metric('Ladestrom');
-    ui.yield = metric('Ertrag heute'); ui.load = metric('Lastausgang');
-    [ui.pv, ui.vbat, ui.ibat, ui.yield, ui.load].forEach(function (m) { ui.metrics.appendChild(m.box); });
+    ui.metricKey = '';
+    ui.metricEls = [];
     tile.appendChild(ui.metrics);
 
     ui.note = document.createElement('p'); ui.note.className = 'note';
@@ -387,15 +487,16 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var ks = rec.keyState;
     ui.metrics.hidden = !(r && ks === 'ok');
     if (r && ks === 'ok') {
-      setMetric(ui.pv, fmt(r.pvW, 0), 'W');
-      setMetric(ui.vbat, fmt(r.vBat, 2), 'V');
-      setMetric(ui.ibat, fmt(r.iBat, 1), 'A');
-      setMetric(ui.yield, fmt(r.yieldWh / 1000, 2), 'kWh');
-      ui.load.box.hidden = r.loadA === null;
-      if (r.loadA !== null) { setMetric(ui.load, fmt(r.loadA, 1), 'A'); }
+      var key = r.metrics.map(function (x) { return x[0]; }).join('|');
+      if (key !== ui.metricKey) {
+        ui.metrics.textContent = '';
+        ui.metricEls = r.metrics.map(function (x) { var mm = metric(x[0]); ui.metrics.appendChild(mm.box); return mm; });
+        ui.metricKey = key;
+      }
+      r.metrics.forEach(function (x, idx) { setMetric(ui.metricEls[idx], x[1], x[2]); });
       ui.pill.textContent = r.stateText;
       ui.pill.className = 'pill' + (r.stateLevel ? ' ' + r.stateLevel : '');
-      if (r.error) { ui.note.className = 'note bad'; ui.note.textContent = 'Fehlercode ' + r.error; }
+      if (r.alarm) { ui.note.className = 'note bad'; ui.note.textContent = r.alarm; }
       else { ui.note.className = 'note'; ui.note.textContent = ''; }
     } else {
       ui.pill.textContent = '';
