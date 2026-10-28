@@ -210,6 +210,9 @@ function decodeSolarView(b) {
   };
 }
 
+/* Nennkapazität der Batterie am SmartShunt in Ah (steht nicht in den Funkdaten, hier einstellen) */
+var BATTERY_AH = 200;
+
 /* Batteriemonitor (SmartShunt, BMV), Datensatztyp 0x02 */
 function decodeBattery(b) {
   var ttg = bitsLE(b, 0, 16);
@@ -230,7 +233,12 @@ function decodeBattery(b) {
     m.push(['Strom', (i > 0 ? '+' : '') + fmtDE(i, 2), 'A']);
     m.push(['Leistung', (i > 0 ? '+' : '') + fmtDE(i * v, 0), 'W']);
   }
-  if (consumed !== null) { m.push(['Verbraucht', fmtDE(consumed, 1), 'Ah']); }
+  if (consumed !== null) {
+    /* Rest = Nennkapazität minus Verbrauch (Verbrauch ist negativ gemeldet), begrenzt auf 0 bis Nennkapazität */
+    var rest = Math.max(0, Math.min(BATTERY_AH, BATTERY_AH + consumed));
+    m.push(['Rest von ' + fmtDE(BATTERY_AH, 0) + ' Ah', fmtDE(rest, 1), 'Ah']);
+    m.push(['Verbraucht', fmtDE(consumed, 1), 'Ah']);
+  }
   if (ttg === 0xFFFF) { m.push(['Restlaufzeit', '∞', '']); }
   else { m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']); }
   if (auxMode === 0 && aux !== 0xFFFF) { m.push(['Starterbatterie', fmtDE(signed(aux, 16) / 100, 2), 'V']); }
