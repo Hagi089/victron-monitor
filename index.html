@@ -738,7 +738,10 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     try { return JSON.parse(localStorage.getItem('victron-known') || '[]') || []; } catch (e) { return []; }
   }
   function isBms(name) { return /^(DP\d|SP\d|xiaoxiang|JBD|LZ)/i.test(name || ''); }
-  var BMS_OPTS = [0xff00];
+  var BMS_SVC = '0000ff00-0000-1000-8000-00805f9b34fb';
+  var BMS_NOTIFY = '0000ff01-0000-1000-8000-00805f9b34fb';
+  var BMS_WRITE = '0000ff02-0000-1000-8000-00805f9b34fb';
+  var BMS_OPTS = [BMS_SVC];
   function startDevice(dev, how) { return isBms(dev.name) ? connectBms(dev, how) : watchDevice(dev, how); }
 
   /* Akku-Verbindung: aufräumen, damit nach einem Abbruch nichts doppelt läuft */
@@ -809,9 +812,9 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       return dev.gatt.connect();
     }).then(function (server) {
       log('Akku: Verbindung steht, suche Dienst FF00');
-      return server.getPrimaryService(0xff00);
+      return server.getPrimaryService(BMS_SVC);
     }).then(function (svc) {
-      return Promise.all([svc.getCharacteristic(0xff01), svc.getCharacteristic(0xff02)]);
+      return Promise.all([svc.getCharacteristic(BMS_NOTIFY), svc.getCharacteristic(BMS_WRITE)]);
     }).then(function (ch) {
       tx = ch[1];
       var handler = function (ev) {
@@ -930,7 +933,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     if (!navigator.bluetooth) { return; }
     var opts = rec.name ? { filters: [{ name: rec.name }], optionalServices: BMS_OPTS } : { acceptAllDevices: true, optionalServices: BMS_OPTS };
     log('Verbinden mit ' + (rec.name || rec.id));
-    navigator.bluetooth.requestDevice(opts).then(function (dev) {
+    pickDevice(opts).then(function (dev) {
       if (dev.id !== rec.id && devices[rec.id] && devices[rec.id].ui && !devices[dev.id]) {
         /* Gerät hat neue Kennung: Kachel übernehmen */
         devices[dev.id] = devices[rec.id]; devices[dev.id].id = dev.id; delete devices[rec.id];
@@ -942,15 +945,32 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     });
   }
 
+  /* requestDevice kann in manchen Browsern sofort werfen: als Fehler weiterreichen, damit er sichtbar wird */
+  function pickDevice(opts) {
+    try { return navigator.bluetooth.requestDevice(opts); } catch (e) { return Promise.reject(e); }
+  }
   function addDevice() {
     if (!navigator.bluetooth) { setStatus('Dieser Browser hat kein Web Bluetooth. Öffne die Seite in Bluefy.'); return; }
     log('Geräteauswahl wird geöffnet');
-    navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: BMS_OPTS }).then(function (dev) {
+    setStatus('Geräteauswahl wird geöffnet …');
+    var timer = setTimeout(function () {
+      log('Nach 8 s noch keine Rückmeldung der Geräteauswahl');
+      setStatus('Falls keine Auswahl erscheint: Details stehen im Protokoll der Diagnose.');
+    }, 8000);
+    pickDevice({ acceptAllDevices: true, optionalServices: BMS_OPTS }).catch(function (e) {
+      if (e && (e.name === 'TypeError' || e.name === 'SyntaxError')) {
+        log('Auswahl mit Akku-Dienst abgelehnt (' + explain(e) + '), versuche ohne');
+        return pickDevice({ acceptAllDevices: true });
+      }
+      throw e;
+    }).then(function (dev) {
+      clearTimeout(timer);
       log('Gewählt: ' + (dev.name || dev.id));
       return startDevice(dev, 'hinzugefügt').then(function () {
         setStatus('Beobachtung läuft für ' + (dev.name || dev.id) + '. Weitere Geräte kannst du jederzeit hinzufügen.');
       });
     }).catch(function (e) {
+      clearTimeout(timer);
       setStatus('Das Gerät konnte nicht hinzugefügt werden: ' + explain(e));
       log('Fehler: ' + explain(e));
     });
