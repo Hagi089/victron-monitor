@@ -1,3 +1,3 @@
-# victron-monitor
+# Obelix Strom Dashboard
 
-Bluetooth-Funktest und späterer Anzeigemonitor für Victron-Geräte (Instant Readout), gedacht für Bluefy auf dem iPad.
+Bluetooth-Anzeigemonitor für Victron-Geräte (Instant Readout) und den LANGZEIT-Akku, gedacht für Bluefy auf dem iPad.
