@@ -28,6 +28,7 @@
     color-scheme: dark;
   }
 }
+:root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] {
   --bg: #0e1514; --panel: #162120; --fg: #e6efed; --muted: #93a6a3; --line: #2a3b39;
   --accent: #5aaef0; --accent-fg: #06121c;
@@ -114,6 +115,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
 #btnArrange[aria-pressed="true"] { color: var(--accent-fg); background: var(--accent); }
 </style>
 
+<script>try { var th = localStorage.getItem('victron-theme'); if (th === 'light' || th === 'dark') { document.documentElement.setAttribute('data-theme', th); } } catch (e) { /* egal */ }</script>
 <div class="wrap">
   <header>
     <div class="topbar">
@@ -121,6 +123,7 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="btnArrange" type="button" class="secondary">Anordnen</button>
         <button id="btnAdd" type="button" class="secondary">Gerät hinzufügen</button>
+        <button id="btnTheme" type="button" class="secondary">☾ Dunkel</button>
       </div>
     </div>
     <p class="lead" id="lead">Zeigt die Messwerte deiner Victron-Geräte live per Bluetooth. Die Schlüssel bleiben auf diesem iPad.</p>
@@ -1129,6 +1132,25 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   }
   window.addEventListener('resize', layout);
   window.addEventListener('orientationchange', function () { setTimeout(layout, 300); });
+
+  /* Hell/Dunkel: ohne eigene Wahl folgt die Seite dem iPad, ein Tipp wechselt und merkt sich die Wahl */
+  function systemDark() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { return false; }
+  }
+  function currentTheme() { return document.documentElement.getAttribute('data-theme') || (systemDark() ? 'dark' : 'light'); }
+  function showThemeButton() {
+    var dark = currentTheme() === 'dark';
+    var b = el('btnTheme');
+    b.textContent = dark ? '☀ Hell' : '☾ Dunkel';
+    b.setAttribute('aria-label', dark ? 'Zum hellen Modus wechseln' : 'Zum dunklen Modus wechseln');
+  }
+  el('btnTheme').addEventListener('click', function () {
+    var next = currentTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('victron-theme', next); } catch (e) { /* egal */ }
+    showThemeButton();
+  });
+  showThemeButton();
 
   el('btnAdd').addEventListener('click', addDevice);
   el('btnCopy').addEventListener('click', copyLog);
