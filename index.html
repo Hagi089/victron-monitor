@@ -292,7 +292,14 @@ function decodeAny(type, b) {
 /* JBD-BMS (Xiaoxiang, u. a. in LANGZEIT-Akkus). Antwortrahmen: DD cmd status len data... chkH chkL 77 */
 var JBD_REQ_BASIC = [0xDD, 0xA5, 0x03, 0x00, 0xFF, 0xFD, 0x77];
 var JBD_REQ_CELLS = [0xDD, 0xA5, 0x04, 0x00, 0xFF, 0xFC, 0x77];
-function JbdAssembler() { this.buf = []; }
+function JbdAssembler() { this.buf = []; this.bad = 0; }
+/* Prüfsumme der Antwort: 0x10000 minus (Status + Länge + Daten) */
+function jbdChecksumOk(f, need) {
+  var sum = 0;
+  for (var i = 2; i < need - 3; i++) { sum += f[i]; }
+  var chk = (f[need - 3] << 8) | f[need - 2];
+  return ((0x10000 - sum) & 0xFFFF) === chk;
+}
 JbdAssembler.prototype.push = function (bytes) {
   var out = [];
   for (var i = 0; i < bytes.length; i++) { this.buf.push(bytes[i]); }
@@ -302,8 +309,14 @@ JbdAssembler.prototype.push = function (bytes) {
     var need = 4 + this.buf[3] + 3;
     if (this.buf.length < need) { break; }
     var f = this.buf.slice(0, need);
-    this.buf = this.buf.slice(need);
-    if (f[need - 1] === 0x77) { out.push({ cmd: f[1], status: f[2], data: f.slice(4, 4 + f[3]) }); }
+    if (f[need - 1] === 0x77 && jbdChecksumOk(f, need)) {
+      this.buf = this.buf.slice(need);
+      out.push({ cmd: f[1], status: f[2], data: f.slice(4, 4 + f[3]) });
+    } else {
+      /* kaputter Rahmen oder falscher Start: ein Byte weiter und neu suchen */
+      this.bad += 1;
+      this.buf.shift();
+    }
   }
   if (this.buf.length > 512) { this.buf = []; }
   return out;
@@ -728,39 +741,94 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   var BMS_OPTS = [0xff00];
   function startDevice(dev, how) { return isBms(dev.name) ? connectBms(dev, how) : watchDevice(dev, how); }
 
+  /* Akku-Verbindung: aufräumen, damit nach einem Abbruch nichts doppelt läuft */
+  function bmsTeardown(rec) {
+    clearInterval(rec.poll); rec.poll = null;
+    clearTimeout(rec.pollCells); rec.pollCells = null;
+    if (rec.bmsChar && rec.bmsHandler) {
+      try { rec.bmsChar.removeEventListener('characteristicvaluechanged', rec.bmsHandler); } catch (e) { /* egal */ }
+    }
+    rec.bmsChar = null; rec.bmsHandler = null;
+  }
+  function bmsErrorText(e) {
+    var n = e && e.name;
+    if (n === 'NotFoundError') { return 'Der Akku bietet den erwarteten Dienst (FF00) nicht an, oder der Browser darf ihn nicht nutzen. Wähle den Akku über „Verbinden“ neu aus.'; }
+    if (n === 'SecurityError' || n === 'NotAllowedError') { return 'Der Browser erlaubt den Zugriff auf den Akku nicht. Wähle ihn über „Verbinden“ neu aus.'; }
+    return 'Keine Verbindung zum Akku. Ist die LANGZEIT-App noch verbunden? Dann dort trennen. Die Seite versucht es automatisch weiter.';
+  }
+  function bmsWrite(rec, tx, arr) {
+    var req = new Uint8Array(arr);
+    function viaWithResponse() { return tx.writeValue ? tx.writeValue(req) : tx.writeValueWithResponse(req); }
+    var p;
+    try { p = tx.writeValueWithoutResponse ? tx.writeValueWithoutResponse(req) : viaWithResponse(); } catch (x) { p = Promise.reject(x); }
+    Promise.resolve(p).catch(function (e1) {
+      /* einmal mit der anderen Schreibart versuchen */
+      var q;
+      try { q = viaWithResponse(); } catch (x2) { q = Promise.reject(x2); }
+      return Promise.resolve(q).catch(function (e2) {
+        rec.writeErr = (rec.writeErr || 0) + 1;
+        if (rec.writeErr <= 3) { log('Akku Anfrage: ' + explain(e1) + ' / ' + explain(e2)); }
+      });
+    });
+  }
+
   function connectBms(dev, how) {
     rememberDevice(dev);
     var rec = devices[dev.id] || (devices[dev.id] = { id: dev.id, name: dev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {} });
     rec.kind = 'bms';
     rec.dev = dev;
-    rec.bmsMsg = 'Verbinde mit dem Akku …';
+    rec.bmsWanted = true;
     watched[dev.id] = true;
-    updateTile(rec);
+    if (rec.bmsBusy) { return Promise.resolve(); }
     if (!dev.gatt) { rec.bmsMsg = 'Dieser Browser kann sich nicht mit dem Akku verbinden.'; updateTile(rec); return Promise.resolve(); }
+    rec.bmsBusy = true;
+    rec.bmsMsg = 'Verbinde mit dem Akku …';
+    updateTile(rec);
     if (!rec.onDisc) {
       rec.onDisc = function () {
-        clearInterval(rec.poll); rec.poll = null;
+        /* verspätete Meldung einer alten Verbindung ignorieren */
+        if (dev.gatt && dev.gatt.connected) { return; }
+        bmsTeardown(rec);
         log('Akku getrennt: ' + (dev.name || dev.id));
         rec.bmsMsg = 'Verbindung zum Akku verloren, versuche es erneut …';
         updateTile(rec);
-        setTimeout(function () { if (!rec.poll) { connectBms(dev, 'erneut').catch(function () {}); } }, 5000);
       };
       dev.addEventListener('gattserverdisconnected', rec.onDisc);
     }
+    bmsTeardown(rec);
     var asm = new JbdAssembler();
     var tx;
-    return dev.gatt.connect().then(function (server) {
+    var rawLogged = 0, badLogged = 0, dumped = {};
+    var pre = Promise.resolve();
+    if (dev.gatt.connected) {
+      /* hängende Verbindung sauber beenden, bevor neu aufgebaut wird */
+      try { dev.gatt.disconnect(); } catch (e) { /* egal */ }
+      pre = new Promise(function (res) { setTimeout(res, 500); });
+    }
+    return pre.then(function () {
+      return dev.gatt.connect();
+    }).then(function (server) {
+      log('Akku: Verbindung steht, suche Dienst FF00');
       return server.getPrimaryService(0xff00);
     }).then(function (svc) {
       return Promise.all([svc.getCharacteristic(0xff01), svc.getCharacteristic(0xff02)]);
     }).then(function (ch) {
       tx = ch[1];
-      ch[0].addEventListener('characteristicvaluechanged', function (ev) {
+      var handler = function (ev) {
         var v = ev.target.value;
         var bytes = Array.prototype.slice.call(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
-        asm.push(bytes).forEach(function (f) {
-          if (f.status !== 0) { return; }
-          if (f.cmd === 0x03) { rec.jbdBasic = decodeJbdBasic(f.data); }
+        if (rawLogged < 4) { rawLogged++; log('Akku Rohdaten (' + bytes.length + ' Byte): ' + hexOf(bytes)); }
+        var badBefore = asm.bad;
+        var frames;
+        try { frames = asm.push(bytes); } catch (x) { log('Akku Auswertung: ' + explain(x)); return; }
+        if (asm.bad !== badBefore && badLogged < 5) { badLogged++; log('Akku: ungültiger Rahmen verworfen (Summe ' + asm.bad + ')'); }
+        frames.forEach(function (f) {
+          if (f.status !== 0) { log('Akku meldet Fehlerstatus ' + f.status + ' bei Befehl ' + f.cmd); return; }
+          if (!dumped[f.cmd]) { dumped[f.cmd] = true; log('Akku Befehl 0x' + f.cmd.toString(16) + ' (' + f.data.length + ' Byte): ' + hexOf(f.data)); }
+          if (f.cmd === 0x03) {
+            var bsc = decodeJbdBasic(f.data);
+            if (bsc) { rec.jbdBasic = bsc; } else { log('Akku: Basisdaten zu kurz (' + f.data.length + ' Byte)'); }
+          }
           if (f.cmd === 0x04) { rec.jbdCells = decodeJbdCells(f.data); }
           if (rec.jbdBasic) {
             rec.readout = jbdView(rec.jbdBasic, rec.jbdCells);
@@ -768,31 +836,58 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
             rec.unsupported = null;
             rec.pktAt = Date.now();
             rec.bmsMsg = '';
+            rec.bmsFail = 0;
             updateTile(rec);
           }
         });
-      });
+      };
+      rec.bmsChar = ch[0]; rec.bmsHandler = handler;
+      ch[0].addEventListener('characteristicvaluechanged', handler);
       return ch[0].startNotifications();
     }).then(function () {
       log('Akku verbunden (' + how + '): ' + (dev.name || dev.id));
       rec.bmsMsg = 'Verbunden, warte auf Daten …';
+      rec.bmsSince = Date.now();
+      rec.writeErr = 0;
       updateTile(rec);
-      var n = 0;
       var send = function () {
-        var req = new Uint8Array(n % 2 === 0 ? JBD_REQ_BASIC : JBD_REQ_CELLS);
-        n++;
-        var w = tx.writeValueWithoutResponse ? tx.writeValueWithoutResponse(req) : tx.writeValue(req);
-        w.catch(function (e) { log('Akku Anfrage: ' + explain(e)); });
+        bmsWrite(rec, tx, JBD_REQ_BASIC);
+        clearTimeout(rec.pollCells);
+        rec.pollCells = setTimeout(function () { bmsWrite(rec, tx, JBD_REQ_CELLS); }, 700);
       };
       clearInterval(rec.poll);
       send();
-      rec.poll = setInterval(send, 1500);
+      rec.poll = setInterval(send, 2000);
+      rec.bmsBusy = false;
     }).catch(function (e) {
-      log('Akku Verbindung: ' + explain(e));
-      rec.bmsMsg = 'Keine Verbindung zum Akku. Ist die LANGZEIT-App noch verbunden? Dann dort trennen und hier auf „Verbinden“ tippen.';
+      rec.bmsBusy = false;
+      bmsTeardown(rec);
+      rec.bmsFail = (rec.bmsFail || 0) + 1;
+      log('Akku Verbindung (Versuch ' + rec.bmsFail + '): ' + explain(e));
+      rec.bmsMsg = bmsErrorText(e);
       updateTile(rec);
     });
   }
+  /* Wächter: baut die Akku-Verbindung neu auf, wenn sie weg ist oder nichts mehr ankommt */
+  setInterval(function () {
+    var now = Date.now();
+    Object.keys(devices).forEach(function (k) {
+      var rec = devices[k];
+      if (rec.kind !== 'bms' || !rec.bmsWanted || rec.bmsBusy || !rec.dev) { return; }
+      var connected = !!(rec.dev.gatt && rec.dev.gatt.connected);
+      var since = rec.pktAt || rec.bmsSince || now;
+      var silent = connected && !!rec.poll && (now - since) > 30000;
+      if (connected && rec.poll && !rec.pktAt && (now - since) > 15000 && !/Antwort/.test(rec.bmsMsg || '')) {
+        rec.bmsMsg = 'Verbunden, aber keine Antwort vom Akku. Ist die LANGZEIT-App noch geöffnet? Dann dort trennen.';
+        updateTile(rec);
+      }
+      if ((!connected || silent) && now >= (rec.nextTry || 0)) {
+        rec.nextTry = now + ((rec.bmsFail || 0) > 3 ? 30000 : 10000);
+        log('Akku: neuer Verbindungsversuch' + (silent ? ' (seit 30 s keine Daten)' : ''));
+        connectBms(rec.dev, 'erneut').catch(function () { /* steht im Protokoll */ });
+      }
+    });
+  }, 5000);
 
   function rememberDevice(dev) {
     var list = loadKnown().filter(function (d) { return d.id !== dev.id; });
