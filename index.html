@@ -57,6 +57,7 @@ p { margin: 0; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 12px; min-width: 0; min-height: 0; }
 .tile.stale { opacity: 0.6; }
 .tile-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.tile-name input { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
 .tile-name { font-size: 18px; font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
 .tile-sub { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .pill { display: inline-block; font-size: 12.5px; font-weight: 650; padding: 3px 10px; border-radius: 999px; color: var(--muted); background: var(--bg); }
@@ -505,6 +506,39 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     return { box: m, num: num, unit: unit };
   }
 
+  /* Eigene Anzeigenamen (Gerätename bleibt unverändert, er wird zum Verbinden gebraucht) */
+  function loadNames() {
+    try { return JSON.parse(localStorage.getItem('victron-names') || '{}') || {}; } catch (e) { return {}; }
+  }
+  function displayName(rec) { return loadNames()[rec.id] || rec.name || 'Victron-Gerät'; }
+  function setCustomName(id, name) {
+    var n = loadNames();
+    if (name) { n[id] = name; } else { delete n[id]; }
+    try { localStorage.setItem('victron-names', JSON.stringify(n)); } catch (e) { /* egal */ }
+  }
+  function startRename(rec, ui) {
+    if (ui.renaming) { return; }
+    var inp = document.createElement('input');
+    inp.type = 'text'; inp.maxLength = 40; inp.value = displayName(rec); inp.placeholder = rec.name || '';
+    inp.setAttribute('aria-label', 'Name der Kachel');
+    inp.setAttribute('autocomplete', 'off'); inp.setAttribute('autocapitalize', 'off'); inp.setAttribute('autocorrect', 'off'); inp.setAttribute('spellcheck', 'false');
+    ui.renaming = true;
+    ui.name.textContent = '';
+    ui.name.appendChild(inp);
+    function done(save) {
+      if (!ui.renaming) { return; }
+      ui.renaming = false;
+      if (save) { setCustomName(rec.id, inp.value.replace(/^\s+|\s+$/g, '')); log('Name geändert: ' + displayName(rec)); }
+      updateTile(rec);
+    }
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { done(true); } else if (e.key === 'Escape') { done(false); }
+    });
+    inp.addEventListener('blur', function () { done(true); });
+    inp.focus();
+    try { inp.select(); } catch (e) { /* egal */ }
+  }
+
   function buildTile(rec) {
     var ui = {};
     var tile = document.createElement('article'); tile.className = 'tile';
@@ -530,10 +564,12 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var bPrev = document.createElement('button'); bPrev.type = 'button'; bPrev.className = 'secondary'; bPrev.textContent = '◀'; bPrev.setAttribute('aria-label', 'Nach vorne');
     var bDrag = document.createElement('button'); bDrag.type = 'button'; bDrag.className = 'secondary handle'; bDrag.textContent = 'Ziehen';
     var bNext = document.createElement('button'); bNext.type = 'button'; bNext.className = 'secondary'; bNext.textContent = '▶'; bNext.setAttribute('aria-label', 'Nach hinten');
-    arr.appendChild(bPrev); arr.appendChild(bDrag); arr.appendChild(bNext);
+    var bName = document.createElement('button'); bName.type = 'button'; bName.className = 'secondary'; bName.textContent = 'Name'; bName.setAttribute('aria-label', 'Kachel umbenennen');
+    arr.appendChild(bPrev); arr.appendChild(bDrag); arr.appendChild(bNext); arr.appendChild(bName);
     tile.appendChild(arr);
     bPrev.addEventListener('click', function () { moveTile(tile, -1); });
     bNext.addEventListener('click', function () { moveTile(tile, 1); });
+    bName.addEventListener('click', function () { startRename(rec, ui); });
     startDrag(bDrag, tile);
 
     ui.metrics = document.createElement('div'); ui.metrics.className = 'metrics';
@@ -602,7 +638,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     if (!rec.ui) { rec.ui = buildTile(rec); rec.keyOpened = false; }
     var ui = rec.ui;
     var now = Date.now();
-    ui.name.textContent = rec.name || 'Victron-Gerät';
+    if (!ui.renaming) { ui.name.textContent = displayName(rec); }
     var age = rec.pktAt ? Math.round((now - rec.pktAt) / 1000) : null;
     ui.sub.textContent = (rec.rssi !== null && rec.rssi !== undefined ? rec.rssi + ' dBm · ' : '') + (age === null ? 'noch keine Messdaten' : 'vor ' + age + ' s');
     var stale = age === null || age > 15;
@@ -679,13 +715,19 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var id = dev.id || dev.name || 'unbekannt';
     var rec = devices[id];
     if (!rec) {
-      rec = devices[id] = { id: id, name: dev.name || ev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: false, types: {} };
+      rec = devices[id] = { id: id, name: ev.name || dev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: false, types: {} };
       log('Neu: ' + (rec.name || id));
     }
     rec.count += 1;
     rec.last = Date.now();
     if (typeof ev.rssi === 'number') { rec.rssi = ev.rssi; }
-    if (dev.name || ev.name) { rec.name = dev.name || ev.name; }
+    var fresh = ev.name || dev.name;
+    if (fresh && fresh !== rec.name) {
+      log('Gerätename: ' + (rec.name || '(leer)') + ' → ' + fresh);
+      rec.name = fresh;
+      updateKnownName(rec.id, fresh);
+      if (rec.ui) { updateTile(rec); }
+    }
 
     var found = [];
     var md = ev.manufacturerData;
@@ -900,6 +942,12 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     });
   }, 5000);
 
+  function updateKnownName(id, name) {
+    var list = loadKnown();
+    var changed = false;
+    list.forEach(function (d) { if (d.id === id && d.name !== name) { d.name = name; changed = true; } });
+    if (changed) { try { localStorage.setItem('victron-known', JSON.stringify(list)); } catch (e) { /* egal */ } }
+  }
   function rememberDevice(dev) {
     var list = loadKnown().filter(function (d) { return d.id !== dev.id; });
     list.push({ id: dev.id, name: dev.name || '' });
@@ -944,7 +992,9 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     pickDevice(opts).then(function (dev) {
       if (dev.id !== rec.id && devices[rec.id] && devices[rec.id].ui && !devices[dev.id]) {
         /* Gerät hat neue Kennung: Kachel übernehmen */
+        var keepName = loadNames()[rec.id];
         devices[dev.id] = devices[rec.id]; devices[dev.id].id = dev.id; delete devices[rec.id];
+        if (keepName) { setCustomName(dev.id, keepName); }
       }
       return startDevice(dev, 'Verbinden');
     }).catch(function (e) {
