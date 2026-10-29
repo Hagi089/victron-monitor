@@ -71,6 +71,10 @@ var BATTERY_AH = 200;
 /* Bei der AGM-Batterie sind nur etwa 50 % der Energie tatsächlich nutzbar (nicht tiefer als 50 % entladen).
    Nutzbar = 50 - (100 - Ladezustand), also 50 % bei voller Batterie und 0 % bei 50 % Ladezustand. */
 var USABLE_PERCENT = 50;
+/* Entladegrenze ("Discharge floor"), die im SmartShunt eingestellt ist. Der Shunt rechnet die Restlaufzeit bis zu diesem
+   Ladezustand. Hier steht der Wert aus VictronConnect (Einstellungen, Batterie, Entladegrenze), damit die Restlaufzeit
+   auf die nutzbare Grenze (50 %) umgerechnet werden kann. Aus den Funkdaten lässt er sich nicht auslesen. */
+var SHUNT_FLOOR_PERCENT = 20;
 /* Farbstufen der Anzeige "Rest nutzbar": bis 30 % gelb, bis 15 % rot */
 var USABLE_WARN = 30, USABLE_BAD = 15;
 function usableLevel(u) { return u <= USABLE_BAD ? 'bad' : (u <= USABLE_WARN ? 'warn' : ''); }
@@ -106,7 +110,15 @@ function decodeBattery(b) {
     m.push(['Rest nutzbar', fmtDE(usable, 1), '%', usableLevel(usable)]);
   }
   if (ttg === 0xFFFF) { m.push(['Restlaufzeit', '∞', '']); }
-  else { m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']); }
+  else {
+    /* Der Shunt zählt bis zu seiner Entladegrenze, angezeigt wird die Zeit bis zur nutzbaren Grenze:
+       Zeit mal (Ladezustand minus nutzbare Grenze) durch (Ladezustand minus Entladegrenze des Shunts) */
+    if (soc !== null && soc > SHUNT_FLOOR_PERCENT) {
+      var lowest = 100 - USABLE_PERCENT;
+      ttg = Math.round(ttg * Math.max(0, soc - lowest) / (soc - SHUNT_FLOOR_PERCENT));
+    }
+    m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']);
+  }
   if (auxMode === 0 && aux !== 0xFFFF) { m.push(['Starterbatterie', fmtDE(signed(aux, 16) / 100, 2), 'V']); }
   if (auxMode === 1 && aux !== 0xFFFF) { m.push(['Mittelpunkt', fmtDE(aux / 100, 2), 'V']); }
   if (auxMode === 2 && aux !== 0xFFFF) { m.push(['Temperatur', fmtDE(aux / 100 - 273.15, 1), '°C']); }
