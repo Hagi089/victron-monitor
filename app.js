@@ -71,17 +71,18 @@ var BATTERY_AH = 200;
 /* Bei der AGM-Batterie sind nur etwa 50 % der Energie tatsächlich nutzbar (nicht tiefer als 50 % entladen).
    Nutzbar = 50 - (100 - Ladezustand), also 50 % bei voller Batterie und 0 % bei 50 % Ladezustand. */
 var USABLE_PERCENT = 50;
-/* Entladegrenze ("Discharge floor"), die im SmartShunt eingestellt ist. Der Shunt rechnet die Restlaufzeit bis zu diesem
-   Ladezustand. Hier steht der Wert aus VictronConnect (Einstellungen, Batterie, Entladegrenze), damit die Restlaufzeit
-   auf die nutzbare Grenze (50 %) umgerechnet werden kann. Aus den Funkdaten lässt er sich nicht auslesen. */
-var SHUNT_FLOOR_PERCENT = 20;
+/* Restlaufzeit: Der Shunt rechnet mit Peukert-Ausgleich und meldet bei kleinen Strömen deutlich längere Zeiten.
+   Hier wird stattdessen die nutzbare Energie durch den Entladestrom geteilt (vorsichtig, passt zu "Rest nutzbar").
+   Der Strom wird über etwa eine Minute geglättet, damit die Zahl nicht bei jedem Lastwechsel springt. */
+var CURRENT_SMOOTH_MS = 60000;
+var CURRENT_GAP_MS = 300000;
 /* Farbstufen der Anzeige "Rest nutzbar": bis 30 % gelb, bis 15 % rot */
 var USABLE_WARN = 30, USABLE_BAD = 15;
 function usableLevel(u) { return u <= USABLE_BAD ? 'bad' : (u <= USABLE_WARN ? 'warn' : ''); }
 
 /* Batteriemonitor (SmartShunt, BMV), Datensatztyp 0x02 */
-function decodeBattery(b) {
-  var ttg = bitsLE(b, 0, 16);
+function decodeBattery(b, state, now) {
+  now = now === undefined ? Date.now() : now;
   var v = signed(bitsLE(b, 16, 16), 16) / 100;
   var alarm = bitsLE(b, 32, 16);
   var aux = bitsLE(b, 48, 16);
@@ -109,15 +110,20 @@ function decodeBattery(b) {
   } else if (usable !== null) {
     m.push(['Rest nutzbar', fmtDE(usable, 1), '%', usableLevel(usable)]);
   }
-  if (ttg === 0xFFFF) { m.push(['Restlaufzeit', '∞', '']); }
+  /* Entladestrom in A (beim Laden 0), mit Zustand pro Gerät geglättet; ohne Zustand der Momentanwert */
+  var drain = i === null ? null : Math.max(0, -i);
+  if (drain !== null && state) {
+    if (state.t === undefined || now - state.t > CURRENT_GAP_MS) { state.avg = drain; }
+    else { state.avg += (drain - state.avg) * (1 - Math.exp(-Math.max(0, now - state.t) / CURRENT_SMOOTH_MS)); }
+    state.t = now;
+    drain = state.avg;
+  }
+  if (drain === null || usable === null) { m.push(['Restlaufzeit', '–', '']); }
+  else if (drain < 0.05) { m.push(['Restlaufzeit', '∞', '']); }
   else {
-    /* Der Shunt zählt bis zu seiner Entladegrenze, angezeigt wird die Zeit bis zur nutzbaren Grenze:
-       Zeit mal (Ladezustand minus nutzbare Grenze) durch (Ladezustand minus Entladegrenze des Shunts) */
-    if (soc !== null && soc > SHUNT_FLOOR_PERCENT) {
-      var lowest = 100 - USABLE_PERCENT;
-      ttg = Math.round(ttg * Math.max(0, soc - lowest) / (soc - SHUNT_FLOOR_PERCENT));
-    }
-    m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']);
+    var mins = Math.round(usable / 100 * BATTERY_AH / drain * 60);
+    if (mins >= 60000) { m.push(['Restlaufzeit', '> 999', 'h']); }
+    else { m.push(['Restlaufzeit', Math.floor(mins / 60) + ':' + ('0' + (mins % 60)).slice(-2), 'h']); }
   }
   if (auxMode === 0 && aux !== 0xFFFF) { m.push(['Starterbatterie', fmtDE(signed(aux, 16) / 100, 2), 'V']); }
   if (auxMode === 1 && aux !== 0xFFFF) { m.push(['Mittelpunkt', fmtDE(aux / 100, 2), 'V']); }
@@ -168,9 +174,9 @@ function decodeCharger(b) {
   };
 }
 
-function decodeAny(type, b) {
+function decodeAny(type, b, state) {
   if (type === 0x01 && b.length >= 12) { return decodeSolarView(b); }
-  if (type === 0x02 && b.length >= 15) { return decodeBattery(b); }
+  if (type === 0x02 && b.length >= 15) { return decodeBattery(b, state); }
   if (type === 0x08 && b.length >= 13) { return decodeCharger(b); }
   return null;
 }
@@ -348,7 +354,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       return decryptPayload(subtle, ck, iv, enc);
     }).then(function (plain) {
       rec.keyState = 'ok';
-      var view = decodeAny(type, plain);
+      var view = decodeAny(type, plain, rec.smooth || (rec.smooth = {}));
       if (view) {
         rec.readout = view;
         rec.readoutAt = Date.now();
