@@ -71,8 +71,8 @@ var BATTERY_AH = 200;
 /* Bei der AGM-Batterie sind nur etwa 50 % der Energie tatsächlich nutzbar (nicht tiefer als 50 % entladen).
    Nutzbar = 50 - (100 - Ladezustand), also 50 % bei voller Batterie und 0 % bei 50 % Ladezustand. */
 var USABLE_PERCENT = 50;
-/* Farbstufen der Anzeige "Tatsächlich nutzbar": bis 35 % gelb, bis 15 % rot */
-var USABLE_WARN = 35, USABLE_BAD = 15;
+/* Farbstufen der Anzeige "Tatsächlich nutzbar": bis 30 % gelb, bis 15 % rot */
+var USABLE_WARN = 30, USABLE_BAD = 15;
 function usableLevel(u) { return u <= USABLE_BAD ? 'bad' : (u <= USABLE_WARN ? 'warn' : ''); }
 
 /* Batteriemonitor (SmartShunt, BMV), Datensatztyp 0x02 */
