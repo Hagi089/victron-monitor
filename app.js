@@ -68,6 +68,9 @@ function decodeSolarView(b) {
 
 /* Nennkapazität der Batterie am SmartShunt in Ah (steht nicht in den Funkdaten, hier einstellen) */
 var BATTERY_AH = 200;
+/* Bei der AGM-Batterie sind nur etwa 50 % der Energie tatsächlich nutzbar (nicht tiefer als 50 % entladen).
+   Nutzbar = 50 - (100 - Ladezustand), also 50 % bei voller Batterie und 0 % bei 50 % Ladezustand. */
+var USABLE_PERCENT = 50;
 
 /* Batteriemonitor (SmartShunt, BMV), Datensatztyp 0x02 */
 function decodeBattery(b) {
@@ -82,6 +85,7 @@ function decodeBattery(b) {
   var i = iRaw === 0x1FFFFF ? null : signed(iRaw, 22) / 1000;
   var soc = socRaw === 0x3FF ? null : socRaw / 10;
   var consumed = cRaw === 0xFFFFF ? null : -cRaw / 10;
+  var usable = soc === null ? null : Math.max(0, Math.min(USABLE_PERCENT, USABLE_PERCENT - (100 - soc)));
   var m = [];
   m.push(['Ladezustand', soc === null ? '–' : fmtDE(soc, 1), soc === null ? '' : '%']);
   m.push(['Batterie', fmtDE(v, 2), 'V']);
@@ -93,7 +97,10 @@ function decodeBattery(b) {
     /* Rest = Nennkapazität minus Verbrauch (Verbrauch ist negativ gemeldet), begrenzt auf 0 bis Nennkapazität */
     var rest = Math.max(0, Math.min(BATTERY_AH, BATTERY_AH + consumed));
     m.push(['Rest von ' + fmtDE(BATTERY_AH, 0) + ' Ah', fmtDE(rest, 1), 'Ah']);
+    if (usable !== null) { m.push(['Tatsächlich nutzbar', fmtDE(usable, 1), '%']); }
     m.push(['Verbraucht', fmtDE(consumed, 1), 'Ah']);
+  } else if (usable !== null) {
+    m.push(['Tatsächlich nutzbar', fmtDE(usable, 1), '%']);
   }
   if (ttg === 0xFFFF) { m.push(['Restlaufzeit', '∞', '']); }
   else { m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']); }
