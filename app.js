@@ -71,6 +71,9 @@ var BATTERY_AH = 200;
 /* Bei der AGM-Batterie sind nur etwa 50 % der Energie tatsächlich nutzbar (nicht tiefer als 50 % entladen).
    Nutzbar = 50 - (100 - Ladezustand), also 50 % bei voller Batterie und 0 % bei 50 % Ladezustand. */
 var USABLE_PERCENT = 50;
+/* Farbstufen der Anzeige "Tatsächlich nutzbar": bis 35 % gelb, bis 15 % rot */
+var USABLE_WARN = 35, USABLE_BAD = 15;
+function usableLevel(u) { return u <= USABLE_BAD ? 'bad' : (u <= USABLE_WARN ? 'warn' : ''); }
 
 /* Batteriemonitor (SmartShunt, BMV), Datensatztyp 0x02 */
 function decodeBattery(b) {
@@ -97,10 +100,10 @@ function decodeBattery(b) {
     /* Rest = Nennkapazität minus Verbrauch (Verbrauch ist negativ gemeldet), begrenzt auf 0 bis Nennkapazität */
     var rest = Math.max(0, Math.min(BATTERY_AH, BATTERY_AH + consumed));
     m.push(['Rest von ' + fmtDE(BATTERY_AH, 0) + ' Ah', fmtDE(rest, 1), 'Ah']);
-    if (usable !== null) { m.push(['Tatsächlich nutzbar', fmtDE(usable, 1), '%']); }
+    if (usable !== null) { m.push(['Tatsächlich nutzbar', fmtDE(usable, 1), '%', usableLevel(usable)]); }
     m.push(['Verbraucht', fmtDE(consumed, 1), 'Ah']);
   } else if (usable !== null) {
-    m.push(['Tatsächlich nutzbar', fmtDE(usable, 1), '%']);
+    m.push(['Tatsächlich nutzbar', fmtDE(usable, 1), '%', usableLevel(usable)]);
   }
   if (ttg === 0xFFFF) { m.push(['Restlaufzeit', '∞', '']); }
   else { m.push(['Restlaufzeit', Math.floor(ttg / 60) + ':' + ('0' + (ttg % 60)).slice(-2), 'h']); }
@@ -512,7 +515,11 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     return ui;
   }
 
-  function setMetric(m, text, unit) { m.num.textContent = text; m.unit.textContent = unit || ''; }
+  /* Vierter Wert einer Messgröße (optional): Farbstufe 'warn' (gelb) oder 'bad' (rot) */
+  function setMetric(m, text, unit, level) {
+    m.num.textContent = text; m.unit.textContent = unit || '';
+    m.box.className = 'metric' + (level === 'warn' || level === 'bad' ? ' ' + level : '');
+  }
 
   function updateTile(rec) {
     if (!rec.ui) { rec.ui = buildTile(rec); rec.keyOpened = false; }
@@ -535,7 +542,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
         ui.metricEls = r.metrics.map(function (x) { var mm = metric(x[0]); ui.metrics.appendChild(mm.box); return mm; });
         ui.metricKey = key;
       }
-      r.metrics.forEach(function (x, idx) { setMetric(ui.metricEls[idx], x[1], x[2]); });
+      r.metrics.forEach(function (x, idx) { setMetric(ui.metricEls[idx], x[1], x[2], x[3]); });
       ui.pill.textContent = r.stateText;
       ui.pill.className = 'pill' + (r.stateLevel ? ' ' + r.stateLevel : '');
       if (r.alarm) { ui.note.className = 'note bad'; ui.note.textContent = r.alarm; }
