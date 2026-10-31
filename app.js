@@ -234,7 +234,8 @@ var JBD_PROT = ['Zelle Überspannung', 'Zelle Unterspannung', 'Akku Überspannun
   'Entladestrom zu hoch', 'Kurzschluss', 'BMS-Fehler', 'MOSFET gesperrt'];
 function jbdView(b, cells) {
   var m = [];
-  m.push(['Ladezustand', String(b.soc), '%']);
+  /* Farbstufen wie bei "Rest nutzbar": bis 30 % gelb, bis 15 % rot */
+  m.push(['Ladezustand', String(b.soc), '%', usableLevel(b.soc)]);
   m.push(['Batterie', fmtDE(b.v, 2), 'V']);
   m.push(['Strom', (b.i > 0 ? '+' : '') + fmtDE(b.i, 2), 'A']);
   m.push(['Leistung', (b.i > 0 ? '+' : '') + fmtDE(b.i * b.v, 0), 'W']);
