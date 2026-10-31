@@ -232,7 +232,35 @@ function decodeJbdCells(d) {
 var JBD_PROT = ['Zelle Überspannung', 'Zelle Unterspannung', 'Akku Überspannung', 'Akku Unterspannung',
   'Laden zu warm', 'Laden zu kalt', 'Entladen zu warm', 'Entladen zu kalt', 'Ladestrom zu hoch',
   'Entladestrom zu hoch', 'Kurzschluss', 'BMS-Fehler', 'MOSFET gesperrt'];
-function jbdView(b, cells) {
+/* Zellspannungs-Wächter für LiFePO4 (pro einzelne Zelle):
+   - immer (unter Last und während der Erholung): rot unter 3,0 V
+   - in Ruhe (weniger als 0,5 A seit mindestens 5 Minuten): rot unter 3,2 V
+   Zum Zurückschalten braucht es 0,05 V mehr (kein Flackern an der Grenze). */
+var CELL_MIN_LOAD = 3.0, CELL_MIN_REST = 3.2, CELL_HYST = 0.05;
+var REST_CURRENT_A = 0.5, REST_DELAY_MS = 300000, STATE_GAP_MS = 120000;
+function cellCheck(b, cells, state, now) {
+  if (!state) { state = {}; }
+  if (state.t !== undefined && now - state.t > STATE_GAP_MS) { state.restSince = null; }
+  state.t = now;
+  if (Math.abs(b.i) < REST_CURRENT_A) { if (state.restSince === null || state.restSince === undefined) { state.restSince = now; } }
+  else { state.restSince = null; }
+  var rested = state.restSince !== null && state.restSince !== undefined && now - state.restSince >= REST_DELAY_MS;
+  /* Nur plausible Werte der vorhandenen Zellen auswerten, ein Lesefehler (0 V) soll keinen Alarm auslösen */
+  var vals = (cells || []).slice(0, b.cells || cells.length).filter(function (v) { return v >= 1 && v <= 5; });
+  if (!vals.length) { return { low: false, text: '' }; }
+  var mn = Math.min.apply(null, vals);
+  var limit = rested ? CELL_MIN_REST : CELL_MIN_LOAD;
+  var hyst = state.low ? CELL_HYST : 0;
+  state.low = mn < limit + hyst;
+  var text = '';
+  if (state.low) {
+    text = 'Zellspannung zu niedrig: ' + fmtDE(mn, 3) + ' V' + (rested ? ' in Ruhe (Grenze ' + fmtDE(CELL_MIN_REST, 1) + ' V)' : ' (Grenze ' + fmtDE(CELL_MIN_LOAD, 1) + ' V)');
+  }
+  return { low: state.low, text: text };
+}
+function jbdView(b, cells, state, now) {
+  now = now === undefined ? Date.now() : now;
+  var cc = cellCheck(b, cells, state, now);
   var m = [];
   /* Farbstufen wie bei "Rest nutzbar": bis 30 % gelb, bis 15 % rot */
   m.push(['Ladezustand', String(b.soc), '%', usableLevel(b.soc)]);
@@ -253,6 +281,12 @@ function jbdView(b, cells) {
   var st, lvl;
   if (Math.abs(b.i) < 0.05) { st = 'Ruhe'; lvl = ''; } else if (b.i > 0) { st = 'Lädt'; lvl = 'ok'; } else { st = 'Entlädt'; lvl = 'warn'; }
   if (b.soc <= USABLE_BAD) { lvl = 'bad'; }
+  if (cc.low) {
+    /* Zellspannung zu niedrig: alles rot und Warnung */
+    lvl = 'bad';
+    alarms.unshift(cc.text);
+    m = m.map(function (x) { return [x[0], x[1], x[2], 'bad']; });
+  }
   return { stateText: st, stateLevel: lvl, alarm: alarms.join(' · '), info: b.cycles + ' Ladezyklen', plausible: true, check: '', metrics: m };
 }
 
@@ -800,7 +834,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
           }
           if (f.cmd === 0x04) { rec.jbdCells = decodeJbdCells(f.data); }
           if (rec.jbdBasic) {
-            rec.readout = jbdView(rec.jbdBasic, rec.jbdCells);
+            rec.readout = jbdView(rec.jbdBasic, rec.jbdCells, rec.jbdState || (rec.jbdState = {}));
             rec.keyState = 'ok';
             rec.unsupported = null;
             rec.pktAt = Date.now();
