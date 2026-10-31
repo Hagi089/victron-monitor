@@ -252,7 +252,7 @@ function jbdView(b, cells) {
   if (!(b.fet & 2)) { alarms.push('Entladen abgeschaltet'); }
   var st, lvl;
   if (Math.abs(b.i) < 0.05) { st = 'Ruhe'; lvl = ''; } else if (b.i > 0) { st = 'Lädt'; lvl = 'ok'; } else { st = 'Entlädt'; lvl = 'warn'; }
-  if (b.soc < 20) { lvl = 'bad'; }
+  if (b.soc <= USABLE_BAD) { lvl = 'bad'; }
   return { stateText: st, stateLevel: lvl, alarm: alarms.join(' · '), info: b.cycles + ' Ladezyklen', plausible: true, check: '', metrics: m };
 }
 
