@@ -120,3 +120,6 @@ textarea { width: 100%; box-sizing: border-box; min-height: 120px; font-family: 
 .diag h2 { margin-top: 14px; }
 .diag-filter { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13.5px; }
 .diag .actions { margin-top: 10px; }
+
+/* Dateiauswahl für den Konfigurations-Import, wird per Button geöffnet */
+.file-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }

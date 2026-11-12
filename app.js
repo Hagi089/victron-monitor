@@ -1103,6 +1103,66 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   });
   showThemeButton();
 
+
+  /* ---------- Konfiguration importieren / exportieren (obelix-config.json) ---------- */
+  /* Format: { "keys": { "<Gerätename>": "<32 Hex-Zeichen>" }, "names": { "<Gerätename>": "<Kachelname>" } }
+     Schlüssel werden nach Gerätenamen gespeichert, weil die Bluetooth-ID in jedem Browser anders ist. */
+  function importConfig(text) {
+    var cfg;
+    try { cfg = JSON.parse(text); } catch (e) { setStatus('Import fehlgeschlagen: Die Datei ist kein gültiges JSON.'); return; }
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) { setStatus('Import fehlgeschlagen: unbekanntes Format.'); return; }
+    var src = (cfg.keys && typeof cfg.keys === 'object' && !Array.isArray(cfg.keys)) ? cfg.keys : {};
+    var k = loadKeys(), ok = 0, bad = [];
+    Object.keys(src).forEach(function (name) {
+      if (typeof name !== 'string' || !name || name.length > 60 || name === '__proto__') { return; }
+      var hex = cleanKey(String(src[name] || ''));
+      if (hex) { k[name] = hex; ok++; } else { bad.push(name); }
+    });
+    var nm = (cfg.names && typeof cfg.names === 'object' && !Array.isArray(cfg.names)) ? cfg.names : {};
+    var known = loadKnown(), renamed = 0;
+    Object.keys(nm).forEach(function (devName) {
+      var label = typeof nm[devName] === 'string' ? nm[devName].slice(0, 40) : '';
+      known.forEach(function (d) { if (d.name === devName && label) { setCustomName(d.id, label); renamed++; } });
+    });
+    try { localStorage.setItem('victron-keys', JSON.stringify(k)); } catch (e) { setStatus('Import fehlgeschlagen: Speichern nicht möglich.'); return; }
+    Object.keys(devices).forEach(function (id) { var r = devices[id]; r.keyOpened = false; if (r.ui) { updateTile(r); } });
+    var msg = ok + ' Schlüssel importiert';
+    if (renamed) { msg += ', ' + renamed + ' Kachelnamen übernommen'; }
+    if (bad.length) { msg += '. Ungültig (nicht 32 Hex-Zeichen): ' + bad.join(', '); }
+    setStatus(msg + '.');
+    log('Konfiguration importiert: ' + ok + ' Schlüssel');
+  }
+  el('btnImport').addEventListener('click', function () { var f = el('cfgFile'); f.value = ''; f.click(); });
+  el('cfgFile').addEventListener('change', function () {
+    var file = this.files && this.files[0];
+    if (!file) { return; }
+    if (file.size > 20000) { setStatus('Import fehlgeschlagen: Datei zu groß.'); return; }
+    var rd = new FileReader();
+    rd.onload = function () { importConfig(String(rd.result || '')); };
+    rd.onerror = function () { setStatus('Import fehlgeschlagen: Datei nicht lesbar.'); };
+    rd.readAsText(file);
+  });
+  function exportConfig() {
+    var keys = {}, names = {}, n = loadNames();
+    loadKnown().forEach(function (d) {
+      if (!d.name) { return; }
+      var hex = cleanKey(own(loadKeys(), d.id)) || cleanKey(own(loadKeys(), d.name));
+      if (hex) { keys[d.name] = hex; }
+      var lbl = own(n, d.id); if (typeof lbl === 'string' && lbl) { names[d.name] = lbl; }
+    });
+    var text = JSON.stringify({ keys: keys, names: names }, null, 2);
+    try {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      a.download = 'obelix-config.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setStatus('obelix-config.json erstellt (' + Object.keys(keys).length + ' Schlüssel). Datei nicht öffentlich teilen.');
+    } catch (e) {
+      if (navigator.clipboard) { navigator.clipboard.writeText(text); setStatus('Download nicht möglich – Konfiguration in die Zwischenablage kopiert.'); }
+    }
+  }
+  el('btnExport').addEventListener('click', exportConfig);
+
   el('btnAdd').addEventListener('click', addDevice);
   el('btnCopy').addEventListener('click', copyLog);
   el('onlyVictron').addEventListener('change', renderDiag);

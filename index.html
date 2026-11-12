@@ -13,6 +13,8 @@
       <div class="topbar-actions">
         <button id="btnArrange" type="button" class="secondary">Anordnen</button>
         <button id="btnAdd" type="button" class="secondary">Gerät hinzufügen</button>
+        <button id="btnImport" type="button" class="secondary">Konfiguration importieren</button>
+        <input id="cfgFile" type="file" accept=".json,application/json,text/plain" class="file-hidden" aria-hidden="true" tabindex="-1">
         <button id="btnTheme" type="button" class="secondary">☾ Dunkel</button>
       </div>
     </div>
@@ -31,7 +33,7 @@
     <div id="devices"></div>
     <h2>Protokoll</h2>
     <textarea id="log" readonly></textarea>
-    <div class="actions"><button id="btnCopy" type="button" class="secondary">Protokoll kopieren</button></div>
+    <div class="actions"><button id="btnCopy" type="button" class="secondary">Protokoll kopieren</button> <button id="btnExport" type="button" class="secondary">Konfiguration exportieren</button></div>
   </details>
 </div>
 <script src="app.js"></script>
