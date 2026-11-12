@@ -937,7 +937,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   }
   function reconnect(rec) {
     if (!navigator.bluetooth) { return; }
-    var opts = rec.name ? { filters: [{ name: rec.name }], optionalServices: BMS_OPTS } : { acceptAllDevices: true, optionalServices: BMS_OPTS };
+    var opts = rec.name ? { filters: [{ name: rec.name }], optionalServices: BMS_OPTS, optionalManufacturerData: [VICTRON_ID] } : { acceptAllDevices: true, optionalServices: BMS_OPTS, optionalManufacturerData: [VICTRON_ID] };
     log('Verbinden mit ' + (rec.name || rec.id));
     pickDevice(opts).then(function (dev) {
       if (dev.id !== rec.id && devices[rec.id] && devices[rec.id].ui && !devices[dev.id]) {
@@ -965,10 +965,10 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       log('Nach 8 s noch keine Rückmeldung der Geräteauswahl');
       setStatus('Falls keine Auswahl erscheint: Details stehen im Protokoll der Diagnose.');
     }, 8000);
-    pickDevice({ acceptAllDevices: true, optionalServices: BMS_OPTS }).catch(function (e) {
+    pickDevice({ acceptAllDevices: true, optionalServices: BMS_OPTS, optionalManufacturerData: [VICTRON_ID] }).catch(function (e) {
       if (e && (e.name === 'TypeError' || e.name === 'SyntaxError')) {
         log('Auswahl mit Akku-Dienst abgelehnt (' + explain(e) + '), versuche ohne');
-        return pickDevice({ acceptAllDevices: true });
+        return pickDevice({ acceptAllDevices: true, optionalManufacturerData: [VICTRON_ID] });
       }
       throw e;
     }).then(function (dev) {
