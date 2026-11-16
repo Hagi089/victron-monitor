@@ -312,6 +312,96 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     return out;
   });
 }
+/* Voltcraft SEM6000 (Zwischenstecker 230 V). Rahmen: 0F Länge Befehl(2) Daten… Prüfsumme [FF FF]
+   Länge zählt ab dem Befehl bis einschließlich Prüfsumme. Prüfsumme = (Summe Befehl+Daten + 1) & 0xFF */
+function semFrame(body) {
+  var sum = 1;
+  for (var i = 0; i < body.length; i++) { sum += body[i]; }
+  return [0x0F, body.length + 1].concat(body, [sum & 0xFF, 0xFF, 0xFF]);
+}
+var SEM_REQ_MEASURE = semFrame([0x04, 0x00, 0x00, 0x00]);
+var SEM_REQ_DAY = semFrame([0x0A, 0x00, 0x00, 0x00]);
+function cleanPin(s) {
+  var p = String(s === undefined || s === null ? '' : s).replace(/\s/g, '');
+  return /^[0-9]{4}$/.test(p) ? p : null;
+}
+function semLoginFrame(pin) {
+  var p = cleanPin(pin);
+  if (!p) { return null; }
+  return semFrame([0x17, 0x00, 0x00, +p[0], +p[1], +p[2], +p[3], 0x00, 0x00, 0x00, 0x00]);
+}
+function SemAssembler() { this.buf = []; this.bad = 0; }
+SemAssembler.prototype.push = function (bytes) {
+  var out = [];
+  for (var i = 0; i < bytes.length; i++) { this.buf.push(bytes[i]); }
+  for (;;) {
+    /* Endmarke FF FF eines vorigen Rahmens und Müll überspringen */
+    while (this.buf.length && this.buf[0] !== 0x0F) { this.buf.shift(); }
+    if (this.buf.length < 2) { break; }
+    var need = 2 + this.buf[1];
+    if (this.buf[1] < 3) { this.bad += 1; this.buf.shift(); continue; }
+    if (this.buf.length < need) { break; }
+    var f = this.buf.slice(0, need);
+    var sum = 1;
+    for (var k = 2; k < need - 1; k++) { sum += f[k]; }
+    if ((sum & 0xFF) === f[need - 1]) {
+      this.buf = this.buf.slice(need);
+      out.push({ cmd: f[2], sub: f[3], data: f.slice(4, need - 1) });
+    } else {
+      this.bad += 1;
+      this.buf.shift();
+    }
+  }
+  if (this.buf.length > 512) { this.buf = []; }
+  return out;
+};
+/* Messwert-Antwort (Befehl 04 00): an/aus(1) Leistung mW(3) Spannung V(1) Strom mA(2) Frequenz Hz(1) [2 Byte, nur alte Hardware] Gesamt Wh(4) */
+function decodeSemMeasure(d) {
+  if (d.length < 8) { return null; }
+  var r = {
+    on: d[0] === 1,
+    w: ((d[1] << 16) | (d[2] << 8) | d[3]) / 1000,
+    v: d[4],
+    a: ((d[5] << 8) | d[6]) / 1000,
+    hz: d[7],
+    totalWh: null
+  };
+  var o = d.length >= 14 ? 10 : 8;
+  if (d.length >= o + 4) {
+    var t = ((d[o] << 24) >>> 0) + ((d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]);
+    /* alte Hardware (lange Antwort) liefert hier immer 0 */
+    r.totalWh = (o === 10 && t === 0) ? null : t;
+  }
+  return r;
+}
+/* Verbrauch der letzten 24 Stunden (Befehl 0A 00): 24 Werte je 2 Byte in Wh, ältester zuerst.
+   Heute = die letzten (aktuelle Stunde + 1) Werte. */
+function decodeSemDay(d, hourNow) {
+  if (d.length < 48) { return null; }
+  var vals = [];
+  var start = d.length - 48;
+  for (var i = 0; i < 24; i++) { vals.push((d[start + 2 * i] << 8) | d[start + 2 * i + 1]); }
+  var today = 0;
+  for (var h = 23 - hourNow; h < 24; h++) { today += vals[h]; }
+  return { hours: vals, todayWh: today };
+}
+function fmtEnergy(wh) {
+  return wh < 1000 ? [fmtDE(wh, 0), 'Wh'] : [fmtDE(wh / 1000, 2), 'kWh'];
+}
+function semView(m, day) {
+  var met = [];
+  met.push(['Leistung', fmtDE(m.w, m.w < 10 ? 1 : 0), 'W']);
+  met.push(['Spannung', fmtDE(m.v, 0), 'V']);
+  met.push(['Strom', fmtDE(m.a, 2), 'A']);
+  var t = day ? fmtEnergy(day.todayWh) : ['–', ''];
+  met.push(['Heute', t[0], t[1]]);
+  var g = m.totalWh === null ? ['–', ''] : [fmtDE(m.totalWh / 1000, 2), 'kWh'];
+  met.push(['Gesamt', g[0], g[1]]);
+  return {
+    stateText: m.on ? 'an' : 'aus', stateLevel: m.on ? 'ok' : '',
+    alarm: '', info: fmtDE(m.hz, 0) + ' Hz', plausible: true, check: '', metrics: met
+  };
+}
 /* PURE-END */
 
 (function () {
@@ -559,6 +649,38 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       log('Schlüssel gespeichert für ' + (rec.name || rec.id));
     });
 
+    ui.pinBox = document.createElement('details'); ui.pinBox.className = 'key';
+    ui.pinBox.hidden = true;
+    var psum = document.createElement('summary'); psum.textContent = 'PIN';
+    ui.pinBox.appendChild(psum);
+    var phint = document.createElement('p'); phint.className = 'note';
+    phint.textContent = 'Die 4-stellige PIN aus der Voltcraft-App. Sie bleibt auf diesem Gerät.';
+    ui.pinBox.appendChild(phint);
+    var prow = document.createElement('div'); prow.className = 'keyrow';
+    ui.pinInput = document.createElement('input');
+    ui.pinInput.type = 'password';
+    ui.pinInput.maxLength = 4;
+    ui.pinInput.setAttribute('inputmode', 'numeric');
+    ui.pinInput.setAttribute('autocomplete', 'off');
+    ui.pinInput.setAttribute('aria-label', 'PIN des Zwischensteckers');
+    ui.pinInput.placeholder = '4 Ziffern';
+    var pSave = document.createElement('button'); pSave.type = 'button'; pSave.textContent = 'Speichern';
+    prow.appendChild(ui.pinInput); prow.appendChild(pSave);
+    ui.pinBox.appendChild(prow);
+    ui.pinMsg = document.createElement('p'); ui.pinMsg.className = 'note';
+    ui.pinBox.appendChild(ui.pinMsg);
+    tile.appendChild(ui.pinBox);
+    pSave.addEventListener('click', function () {
+      var pin = cleanPin(ui.pinInput.value);
+      if (!pin) { ui.pinMsg.className = 'note bad'; ui.pinMsg.textContent = 'Die PIN hat genau 4 Ziffern.'; return; }
+      storePin(rec, pin);
+      ui.pinInput.value = '';
+      ui.pinMsg.className = 'note ok'; ui.pinMsg.textContent = 'Gespeichert. Verbinde …';
+      log('PIN gespeichert für ' + (rec.name || rec.id));
+      ui.pinBox.open = false;
+      if (rec.dev) { connectSem(rec.dev, 'PIN'); } else { reconnect(rec); }
+    });
+
     el('tiles').appendChild(tile);
     applyOrder();
     var empty = el('emptyTiles'); if (empty) { empty.hidden = true; }
@@ -620,7 +742,11 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       msg = 'Gerätetyp 0x' + rec.unsupported.toString(16) + ' wird noch nicht ausgewertet.'; cls = 'note';
       ui.pill.textContent = 'Typ 0x' + rec.unsupported.toString(16);
     }
-    if (rec.kind === 'bms') {
+    if (rec.kind === 'sem') {
+      ui.pinBox.hidden = false;
+      if (/bei „PIN“/.test(rec.bmsMsg || '') && !ui.pinBox.dataset.opened) { ui.pinBox.open = true; ui.pinBox.dataset.opened = '1'; }
+    }
+    if (rec.kind === 'bms' || rec.kind === 'sem') {
       ui.keyBox.hidden = true;
       if (rec.bmsMsg) { msg = rec.bmsMsg; cls = 'note'; }
       else if (r && !r.alarm) { msg = r.info; cls = 'note'; }
@@ -629,7 +755,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       if (!msg && !(r && r.alarm)) { ui.note.textContent = ''; }
     }
     if (msg) { ui.note.className = cls; ui.note.textContent = msg; }
-    if (rec.kind === 'bms') { return; }
+    if (rec.kind === 'bms' || rec.kind === 'sem') { return; }
 
     ui.keyBox.hidden = ks === 'ok';
     var needKey = !(ks === 'ok');
@@ -734,8 +860,17 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
   var BMS_SVC = '0000ff00-0000-1000-8000-00805f9b34fb';
   var BMS_NOTIFY = '0000ff01-0000-1000-8000-00805f9b34fb';
   var BMS_WRITE = '0000ff02-0000-1000-8000-00805f9b34fb';
-  var BMS_OPTS = [BMS_SVC];
-  function startDevice(dev, how) { return isBms(dev.name) ? connectBms(dev, how) : watchDevice(dev, how); }
+  /* Voltcraft SEM6000: erkannt am Namen (Werksname „Voltcraft…“/„SEM…“ oder ein eigener Name mit „230V“) */
+  function isSem(name) { return /^(voltcraft|sem\s?6)|230\s?v/i.test(name || ''); }
+  var SEM_SVC = '0000fff0-0000-1000-8000-00805f9b34fb';
+  var SEM_WRITE = '0000fff3-0000-1000-8000-00805f9b34fb';
+  var SEM_NOTIFY = '0000fff4-0000-1000-8000-00805f9b34fb';
+  var BMS_OPTS = [BMS_SVC, SEM_SVC];
+  function kindOf(name) { return isBms(name) ? 'bms' : (isSem(name) ? 'sem' : ''); }
+  function startDevice(dev, how) {
+    var k = kindOf(dev.name);
+    return k === 'bms' ? connectBms(dev, how) : (k === 'sem' ? connectSem(dev, how) : watchDevice(dev, how));
+  }
 
   /* Akku-Verbindung: aufräumen, damit nach einem Abbruch nichts doppelt läuft */
   function bmsTeardown(rec) {
@@ -758,8 +893,16 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var a = Array.prototype.join.call(arr, ',');
     return a === JBD_REQ_BASIC.join(',') || a === JBD_REQ_CELLS.join(',');
   }
+  /* Sicherheit: Der Zwischenstecker kann schalten und Einstellungen ändern. Erlaubt sind nur
+     Anmelden mit der eigenen PIN, Messwerte lesen und den Tagesverbrauch lesen. */
+  function isAllowedSemRequest(arr, pin) {
+    var a = Array.prototype.join.call(arr, ',');
+    var login = semLoginFrame(pin);
+    return a === SEM_REQ_MEASURE.join(',') || a === SEM_REQ_DAY.join(',') || (!!login && a === login.join(','));
+  }
   function bmsWrite(rec, tx, arr) {
-    if (!isAllowedBmsRequest(arr)) { log('Blockiert: unerlaubte Anfrage an den Akku'); return; }
+    var ok = rec.kind === 'sem' ? isAllowedSemRequest(arr, rec.pin) : isAllowedBmsRequest(arr);
+    if (!ok) { log('Blockiert: unerlaubte Anfrage an ' + (rec.kind === 'sem' ? 'den Zwischenstecker' : 'den Akku')); return; }
     var req = new Uint8Array(arr);
     function viaWithResponse() { return tx.writeValue ? tx.writeValue(req) : tx.writeValueWithResponse(req); }
     var p;
@@ -871,23 +1014,149 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
       updateTile(rec);
     });
   }
+  /* ---------- Voltcraft SEM6000 ---------- */
+  function loadPins() { return loadMap('victron-pins'); }
+  function findPin(rec) { var p = loadPins(); return cleanPin(own(p, rec.id)) || cleanPin(own(p, rec.name)); }
+  function storePin(rec, pin) {
+    var p = loadPins();
+    p[rec.id] = pin;
+    try { localStorage.setItem('victron-pins', JSON.stringify(p)); } catch (e) { log('PIN konnte nicht gespeichert werden'); }
+  }
+  function connectSem(dev, how) {
+    rememberDevice(dev);
+    var rec = devices[dev.id] || (devices[dev.id] = { id: dev.id, name: dev.name || '', rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {} });
+    rec.kind = 'sem';
+    rec.dev = dev;
+    watched[dev.id] = true;
+    rec.pin = findPin(rec);
+    if (!rec.pin) { rec.bmsWanted = false; rec.bmsMsg = 'Trage unten bei „PIN“ die PIN des Zwischensteckers ein.'; updateTile(rec); return Promise.resolve(); }
+    rec.bmsWanted = true;
+    if (rec.bmsBusy) { return Promise.resolve(); }
+    if (!dev.gatt) { rec.bmsMsg = 'Dieser Browser kann sich nicht mit dem Gerät verbinden.'; updateTile(rec); return Promise.resolve(); }
+    rec.bmsBusy = true;
+    rec.bmsMsg = 'Verbinde mit dem Zwischenstecker …';
+    updateTile(rec);
+    if (!rec.onDisc) {
+      rec.onDisc = function () {
+        if (dev.gatt && dev.gatt.connected) { return; }
+        bmsTeardown(rec);
+        log('Zwischenstecker getrennt: ' + (dev.name || dev.id));
+        rec.bmsMsg = 'Verbindung verloren, versuche es erneut …';
+        updateTile(rec);
+      };
+      dev.addEventListener('gattserverdisconnected', rec.onDisc);
+    }
+    bmsTeardown(rec);
+    var asm = new SemAssembler();
+    var tx;
+    var rawLogged = 0, dumped = {};
+    var pre = Promise.resolve();
+    if (dev.gatt.connected) {
+      try { dev.gatt.disconnect(); } catch (e) { /* egal */ }
+      pre = new Promise(function (res) { setTimeout(res, 500); });
+    }
+    function poll() {
+      bmsWrite(rec, tx, SEM_REQ_MEASURE);
+      var now = Date.now();
+      if (!rec.semDayAt || now - rec.semDayAt > 60000) {
+        rec.semDayAt = now;
+        clearTimeout(rec.pollCells);
+        rec.pollCells = setTimeout(function () { bmsWrite(rec, tx, SEM_REQ_DAY); }, 700);
+      }
+    }
+    return pre.then(function () {
+      return dev.gatt.connect();
+    }).then(function (server) {
+      return server.getPrimaryService(SEM_SVC);
+    }).then(function (svc) {
+      return Promise.all([svc.getCharacteristic(SEM_NOTIFY), svc.getCharacteristic(SEM_WRITE)]);
+    }).then(function (ch) {
+      tx = ch[1];
+      var handler = function (ev) {
+        var v = ev.target.value;
+        var bytes = Array.prototype.slice.call(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+        if (rawLogged < 4) { rawLogged++; log('Stecker Rohdaten (' + bytes.length + ' Byte): ' + hexOf(bytes)); }
+        var frames;
+        try { frames = asm.push(bytes); } catch (x) { log('Stecker Auswertung: ' + explain(x)); return; }
+        frames.forEach(function (f) {
+          if (!dumped[f.cmd]) { dumped[f.cmd] = true; log('Stecker Befehl 0x' + f.cmd.toString(16) + ' (' + f.data.length + ' Byte): ' + hexOf(f.data)); }
+          if (f.cmd === 0x17) {
+            if (f.data[0] === 0) {
+              log('Stecker: angemeldet');
+              rec.bmsMsg = 'Verbunden, warte auf Daten …';
+              updateTile(rec);
+              clearInterval(rec.poll);
+              rec.semDayAt = 0;
+              poll();
+              rec.poll = setInterval(poll, 2000);
+            } else {
+              log('Stecker: PIN abgelehnt');
+              rec.bmsWanted = false;
+              rec.bmsMsg = 'Die PIN wurde abgelehnt. Trage unten bei „PIN“ die richtige PIN ein.';
+              bmsTeardown(rec);
+              try { dev.gatt.disconnect(); } catch (e) { /* egal */ }
+              updateTile(rec);
+            }
+            return;
+          }
+          if (f.cmd === 0x0A) {
+            var dd = decodeSemDay(f.data, new Date().getHours());
+            if (dd) { rec.semDay = dd; } else { log('Stecker: Tagesdaten zu kurz (' + f.data.length + ' Byte)'); }
+          }
+          if (f.cmd === 0x04) {
+            var m = decodeSemMeasure(f.data);
+            if (!m) { log('Stecker: Messwerte zu kurz (' + f.data.length + ' Byte)'); return; }
+            rec.semMeasure = m;
+          }
+          if (rec.semMeasure) {
+            rec.readout = semView(rec.semMeasure, rec.semDay);
+            rec.keyState = 'ok';
+            rec.unsupported = null;
+            rec.pktAt = Date.now();
+            rec.bmsMsg = '';
+            rec.bmsFail = 0;
+            updateTile(rec);
+          }
+        });
+      };
+      rec.bmsChar = ch[0]; rec.bmsHandler = handler;
+      ch[0].addEventListener('characteristicvaluechanged', handler);
+      return ch[0].startNotifications();
+    }).then(function () {
+      log('Zwischenstecker verbunden (' + how + '): ' + (dev.name || dev.id));
+      rec.bmsMsg = 'Verbunden, melde mit PIN an …';
+      rec.bmsSince = Date.now();
+      rec.writeErr = 0;
+      updateTile(rec);
+      bmsWrite(rec, tx, semLoginFrame(rec.pin));
+      rec.bmsBusy = false;
+    }).catch(function (e) {
+      rec.bmsBusy = false;
+      bmsTeardown(rec);
+      rec.bmsFail = (rec.bmsFail || 0) + 1;
+      log('Stecker Verbindung (Versuch ' + rec.bmsFail + '): ' + explain(e));
+      rec.bmsMsg = e && e.name === 'NotFoundError' ? 'Das Gerät bietet den erwarteten Dienst (FFF0) nicht an. Wähle es über „Gerät hinzufügen“ neu aus.' : 'Keine Verbindung. Ist die Voltcraft-App noch verbunden? Dann dort trennen. Die Seite versucht es automatisch weiter.';
+      updateTile(rec);
+    });
+  }
+
   /* Wächter: baut die Akku-Verbindung neu auf, wenn sie weg ist oder nichts mehr ankommt */
   setInterval(function () {
     var now = Date.now();
     Object.keys(devices).forEach(function (k) {
       var rec = devices[k];
-      if (rec.kind !== 'bms' || !rec.bmsWanted || rec.bmsBusy || !rec.dev) { return; }
+      if ((rec.kind !== 'bms' && rec.kind !== 'sem') || !rec.bmsWanted || rec.bmsBusy || !rec.dev) { return; }
       var connected = !!(rec.dev.gatt && rec.dev.gatt.connected);
       var since = rec.pktAt || rec.bmsSince || now;
-      var silent = connected && !!rec.poll && (now - since) > 30000;
-      if (connected && rec.poll && !rec.pktAt && (now - since) > 15000 && !/Antwort/.test(rec.bmsMsg || '')) {
+      var silent = connected && (!!rec.poll || rec.kind === 'sem') && (now - since) > 30000;
+      if (rec.kind === 'bms' && connected && rec.poll && !rec.pktAt && (now - since) > 15000 && !/Antwort/.test(rec.bmsMsg || '')) {
         rec.bmsMsg = 'Verbunden, aber keine Antwort vom Akku. Ist die LANGZEIT-App noch geöffnet? Dann dort trennen.';
         updateTile(rec);
       }
       if ((!connected || silent) && now >= (rec.nextTry || 0)) {
         rec.nextTry = now + ((rec.bmsFail || 0) > 3 ? 30000 : 10000);
-        log('Akku: neuer Verbindungsversuch' + (silent ? ' (seit 30 s keine Daten)' : ''));
-        connectBms(rec.dev, 'erneut').catch(function () { /* steht im Protokoll */ });
+        log((rec.kind === 'sem' ? 'Stecker' : 'Akku') + ': neuer Verbindungsversuch' + (silent ? ' (seit 30 s keine Daten)' : ''));
+        (rec.kind === 'sem' ? connectSem : connectBms)(rec.dev, 'erneut').catch(function () { /* steht im Protokoll */ });
       }
     });
   }, 5000);
@@ -918,7 +1187,7 @@ function decryptPayload(subtle, cryptoKey, iv, enc) {
     var known = loadKnown();
     known.forEach(function (k) {
       if (!devices[k.id]) {
-        devices[k.id] = { id: k.id, name: k.name, rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {}, offline: true, kind: isBms(k.name) ? 'bms' : '' };
+        devices[k.id] = { id: k.id, name: k.name, rssi: null, count: 0, last: 0, mfr: [], victron: true, types: {}, offline: true, kind: kindOf(k.name) };
         updateTile(devices[k.id]);
       }
     });
