@@ -341,12 +341,20 @@ SemAssembler.prototype.push = function (bytes) {
     var need = 2 + this.buf[1];
     if (this.buf[1] < 3) { this.bad += 1; this.buf.shift(); continue; }
     if (this.buf.length < need) { break; }
-    var f = this.buf.slice(0, need);
-    var sum = 1;
-    for (var k = 2; k < need - 1; k++) { sum += f[k]; }
-    if ((sum & 0xFF) === f[need - 1]) {
-      this.buf = this.buf.slice(need);
-      out.push({ cmd: f[2], sub: f[3], data: f.slice(4, need - 1) });
+    /* Neuere Hardware meldet bei Messwerten eine um 2 zu kleine Länge: dann mit +2 prüfen */
+    var hit = 0, lens = [need, need + 2];
+    for (var t = 0; t < 2 && !hit; t++) {
+      var n = lens[t];
+      if (this.buf.length < n) { continue; }
+      var sum = 1;
+      for (var k = 2; k < n - 1; k++) { sum += this.buf[k]; }
+      if ((sum & 0xFF) === this.buf[n - 1]) { hit = n; }
+    }
+    if (!hit && this.buf.length < need + 2 && this.buf[2] === 0x04) { break; }
+    if (hit) {
+      var f = this.buf.slice(0, hit);
+      this.buf = this.buf.slice(hit);
+      out.push({ cmd: f[2], sub: f[3], data: f.slice(4, hit - 1), newHw: hit !== need });
     } else {
       this.bad += 1;
       this.buf.shift();
@@ -356,7 +364,7 @@ SemAssembler.prototype.push = function (bytes) {
   return out;
 };
 /* Messwert-Antwort (Befehl 04 00): an/aus(1) Leistung mW(3) Spannung V(1) Strom mA(2) Frequenz Hz(1) [2 Byte, nur alte Hardware] Gesamt Wh(4) */
-function decodeSemMeasure(d) {
+function decodeSemMeasure(d, newHw) {
   if (d.length < 8) { return null; }
   var r = {
     on: d[0] === 1,
@@ -369,8 +377,8 @@ function decodeSemMeasure(d) {
   var o = d.length >= 14 ? 10 : 8;
   if (d.length >= o + 4) {
     var t = ((d[o] << 24) >>> 0) + ((d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]);
-    /* alte Hardware (lange Antwort) liefert hier immer 0 */
-    r.totalWh = (o === 10 && t === 0) ? null : t;
+    /* alte Hardware (lange Antwort, Länge stimmt) liefert hier immer 0 */
+    r.totalWh = (o === 10 && t === 0 && !newHw) ? null : t;
   }
   return r;
 }
@@ -1104,7 +1112,7 @@ function semView(m, day) {
             if (dd) { rec.semDay = dd; } else { log('Stecker: Tagesdaten zu kurz (' + f.data.length + ' Byte)'); }
           }
           if (f.cmd === 0x04) {
-            var m = decodeSemMeasure(f.data);
+            var m = decodeSemMeasure(f.data, f.newHw);
             if (!m) { log('Stecker: Messwerte zu kurz (' + f.data.length + ' Byte)'); return; }
             rec.semMeasure = m;
           }
