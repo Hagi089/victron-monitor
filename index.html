@@ -9,11 +9,12 @@
 <div class="wrap">
   <header>
     <div class="topbar">
-      <h1>Obelix Strom Dashboard</h1>
+      <div class="brand"><span id="brandIcon" class="brand-ico"></span><h1>Obelix Strom Dashboard</h1></div>
+      <div class="clock" aria-live="off"><b id="clockTime"></b><span id="clockDate"></span></div>
       <div class="topbar-actions">
         <button id="btnArrange" type="button" class="secondary">Anordnen</button>
         <button id="btnAdd" type="button" class="secondary">Gerät hinzufügen</button>
-        <button id="btnImport" type="button" class="secondary">Konfiguration importieren</button>
+        <button id="btnImport" type="button" class="secondary" aria-label="Konfiguration importieren">Konfiguration importieren</button>
         <input id="cfgFile" type="file" accept=".json,application/json,text/plain" class="file-hidden" aria-hidden="true" tabindex="-1">
         <button id="btnTheme" type="button" class="secondary">☾ Dunkel</button>
       </div>

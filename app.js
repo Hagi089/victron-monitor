@@ -21,10 +21,10 @@ function bitsLE(bytes, offset, n) {
 function signed(v, n) { return v >= Math.pow(2, n - 1) ? v - Math.pow(2, n) : v; }
 
 var CHARGE_STATE = {
-  0: ['Aus', ''], 1: ['Sparmodus', 'warn'], 2: ['Fehler', 'bad'], 3: ['Bulk', 'ok'], 4: ['Absorption', 'ok'],
-  5: ['Float', 'ok'], 6: ['Lagerung', 'ok'], 7: ['Ausgleich (manuell)', 'ok'], 9: ['Wechselrichter', 'ok'],
-  11: ['Netzteil', 'ok'], 245: ['Startet', 'warn'], 246: ['Absorption (wiederholt)', 'ok'],
-  247: ['Auto-Ausgleich', 'ok'], 248: ['BatterySafe', 'warn'], 252: ['Externe Steuerung', 'warn']
+  0: ['Aus', ''], 1: ['Sparmodus', 'warn'], 2: ['Fehler', 'bad'], 3: ['Laden', 'ok'], 4: ['Konstantspannung', 'ok'],
+  5: ['Erhaltungsladung', 'ok'], 6: ['Lagerung', 'ok'], 7: ['Ausgleich (manuell)', 'ok'], 9: ['Wechselrichter', 'ok'],
+  11: ['Netzteil', 'ok'], 245: ['Startet', 'warn'], 246: ['Konstantspannung (wiederholt)', 'ok'],
+  247: ['Auto-Ausgleich', 'ok'], 248: ['Batterieschutz', 'warn'], 252: ['Externe Steuerung', 'warn']
 };
 
 /* Solar-Laderegler, Datensatztyp 0x01 */
@@ -525,6 +525,52 @@ function semView(m, day) {
     }).catch(function (e) { out.className = 'note bad'; out.textContent = 'Prüfen fehlgeschlagen: ' + e; });
   }
 
+  /* ---------- Symbole (SVG per createElementNS, kein innerHTML) ---------- */
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var BATT_BODY = 'M4.5 7h13a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z';
+  var ICONS = {
+    camper: ['M2 17V7a2 2 0 0 1 2-2h11.5l4 4.5H20a2 2 0 0 1 2 2V17h-2.2', 'M5 8.5h4v3H5z', 'M12 8.5h3v6h-3z',
+      'M5.1 17.5a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0', 'M15.1 17.5a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0', 'M9 17.5h6M2 17h3'],
+    solar: ['M4.5 4h15A1.5 1.5 0 0 1 21 5.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 14.5v-9A1.5 1.5 0 0 1 4.5 4z', 'M3 10h18M9 4v12M15 4v12M12 16v4M8 20h8'],
+    batt: [BATT_BODY, 'M22 10.5v3M6.5 10v4M10 10v4'],
+    lith: [BATT_BODY, 'M22 10.5v3M12 8.5 9.5 12h3L10 15.5'],
+    plug: ['M9 3v5M15 3v5M6.5 8h11v3a5.5 5.5 0 0 1-11 0zM12 16.5V21'],
+    sock: ['M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0', 'M7.9 12a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0-2.2 0', 'M13.9 12a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0-2.2 0', 'M12 3.5v2M12 18.5v2'],
+    dev: ['M7 7l10 10-5 4V3l5 4L7 17'],
+    arrange: ['M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z'],
+    done: ['M5 12.5l4.5 4.5L19 7.5'],
+    add: ['M12 5v14M5 12h14'],
+    imp: ['M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14'],
+    moon: ['M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z'],
+    sun: ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0-8 0', 'M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4']
+  };
+  function icon(name) {
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('class', 'i');
+    svg.setAttribute('aria-hidden', 'true');
+    (ICONS[name] || ICONS.dev).forEach(function (d) {
+      var path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+  /* Knopf mit Symbol und Beschriftung (die Beschriftung steht in einem eigenen span) */
+  function setButton(b, iconName, text) {
+    b.textContent = '';
+    b.appendChild(icon(iconName));
+    var sp = document.createElement('span'); sp.textContent = text;
+    b.appendChild(sp);
+  }
+  /* Geräteart für Farbe und Symbol der Kachel */
+  function tileKind(rec) {
+    if (rec.kind === 'bms') { return 'lith'; }
+    if (rec.kind === 'sem') { return 'sock'; }
+    var t = rec.pkt ? rec.pkt.type : null;
+    return t === 0x01 ? 'solar' : (t === 0x02 ? 'batt' : (t === 0x08 ? 'plug' : 'dev'));
+  }
+
   /* ---------- Kacheln ---------- */
   function fmt(n, d) { return n.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d }); }
 
@@ -577,12 +623,12 @@ function semView(m, day) {
     var ui = {};
     var tile = document.createElement('article'); tile.className = 'tile';
     var head = document.createElement('div'); head.className = 'tile-head';
-    var left = document.createElement('div'); left.style.minWidth = '0';
+    ui.ico = document.createElement('span'); ui.ico.className = 'tile-ico';
+    ui.icoKind = '';
     ui.name = document.createElement('div'); ui.name.className = 'tile-name';
-    ui.sub = document.createElement('div'); ui.sub.className = 'tile-sub';
-    left.appendChild(ui.name); left.appendChild(ui.sub);
     ui.pill = document.createElement('span'); ui.pill.className = 'pill';
-    head.appendChild(left); head.appendChild(ui.pill);
+    ui.sub = document.createElement('div'); ui.sub.className = 'tile-sub';
+    head.appendChild(ui.ico); head.appendChild(ui.name); head.appendChild(ui.pill); head.appendChild(ui.sub);
     tile.appendChild(head);
 
     ui.connect = document.createElement('button');
@@ -606,10 +652,15 @@ function semView(m, day) {
     bName.addEventListener('click', function () { startRename(rec, ui); });
     startDrag(bDrag, tile);
 
+    /* Hauptwert (erste Messgröße) groß links, die übrigen Werte rechts daneben */
+    ui.body = document.createElement('div'); ui.body.className = 'tile-body';
+    ui.hero = document.createElement('div'); ui.hero.className = 'hero';
     ui.metrics = document.createElement('div'); ui.metrics.className = 'metrics';
+    ui.body.appendChild(ui.hero); ui.body.appendChild(ui.metrics);
     ui.metricKey = '';
     ui.metricEls = [];
-    tile.appendChild(ui.metrics);
+    ui.bar = null;
+    tile.appendChild(ui.body);
 
     ui.note = document.createElement('p'); ui.note.className = 'note';
     tile.appendChild(ui.note);
@@ -710,22 +761,38 @@ function semView(m, day) {
     var now = Date.now();
     if (!ui.renaming) { ui.name.textContent = displayName(rec); }
     var age = rec.pktAt ? Math.round((now - rec.pktAt) / 1000) : null;
-    ui.sub.textContent = (rec.rssi !== null && rec.rssi !== undefined ? rec.rssi + ' dBm · ' : '') + (age === null ? 'noch keine Messdaten' : 'vor ' + age + ' s');
+    ui.sub.textContent = (age === null ? 'noch keine Messdaten' : 'vor ' + age + ' s') + (rec.rssi !== null && rec.rssi !== undefined ? ' · ' + rec.rssi + ' dBm' : '');
     var stale = age === null || age > 15;
-    ui.tile.className = 'tile' + (stale ? ' stale' : '');
-    ui.connect.hidden = !(age === null || age > 30);
-
+    var kind = tileKind(rec);
     var r = rec.readout;
     var ks = rec.keyState;
-    ui.metrics.hidden = !(r && ks === 'ok');
-    if (r && ks === 'ok') {
+    var live = !!(r && ks === 'ok');
+    ui.tile.className = 'tile kind-' + kind + (stale ? ' stale' : '') + (live && r.alarm ? ' alarm' : '');
+    if (ui.icoKind !== kind) { ui.ico.textContent = ''; ui.ico.appendChild(icon(kind)); ui.icoKind = kind; }
+    ui.connect.hidden = !(age === null || age > 30);
+
+    ui.body.hidden = !live;
+    if (live) {
       var key = r.metrics.map(function (x) { return x[0]; }).join('|');
       if (key !== ui.metricKey) {
+        ui.hero.textContent = '';
         ui.metrics.textContent = '';
-        ui.metricEls = r.metrics.map(function (x) { var mm = metric(x[0]); ui.metrics.appendChild(mm.box); return mm; });
+        ui.metricEls = r.metrics.map(function (x, idx) { var mm = metric(x[0]); (idx === 0 ? ui.hero : ui.metrics).appendChild(mm.box); return mm; });
+        ui.bar = null;
+        /* Prozentwerte (Ladezustand) bekommen einen Balken */
+        if (r.metrics.length && r.metrics[0][2] === '%') {
+          var track = document.createElement('div'); track.className = 'bar';
+          ui.bar = document.createElement('i');
+          track.appendChild(ui.bar); ui.hero.appendChild(track);
+        }
         ui.metricKey = key;
       }
       r.metrics.forEach(function (x, idx) { setMetric(ui.metricEls[idx], x[1], x[2], x[3]); });
+      ui.hero.className = 'hero' + (r.metrics[0] && (r.metrics[0][3] === 'warn' || r.metrics[0][3] === 'bad') ? ' ' + r.metrics[0][3] : '');
+      if (ui.bar) {
+        var pct = parseFloat(String(r.metrics[0][1]).replace(',', '.'));
+        ui.bar.style.width = (isNaN(pct) ? 0 : Math.max(0, Math.min(100, pct))) + '%';
+      }
       ui.pill.textContent = r.stateText;
       ui.pill.className = 'pill' + (r.stateLevel ? ' ' + r.stateLevel : '');
       if (r.alarm) { ui.note.className = 'note bad'; ui.note.textContent = r.alarm; }
@@ -751,7 +818,8 @@ function semView(m, day) {
       ui.pill.textContent = 'Typ 0x' + rec.unsupported.toString(16);
     }
     if (rec.kind === 'sem') {
-      ui.pinBox.hidden = false;
+      /* PIN-Feld nur, solange keine Daten kommen oder im Anordnen-Modus (spart Platz auf der Kachel) */
+      ui.pinBox.hidden = live && !ui.pinBox.open && !document.body.classList.contains('arranging');
       if (/bei „PIN“/.test(rec.bmsMsg || '') && !ui.pinBox.dataset.opened) { ui.pinBox.open = true; ui.pinBox.dataset.opened = '1'; }
     }
     if (rec.kind === 'bms' || rec.kind === 'sem') {
@@ -1343,7 +1411,8 @@ function semView(m, day) {
     var on = !document.body.classList.contains('arranging');
     document.body.classList.toggle('arranging', on);
     this.setAttribute('aria-pressed', on ? 'true' : 'false');
-    this.textContent = on ? 'Fertig' : 'Anordnen';
+    setButton(this, on ? 'done' : 'arrange', on ? 'Fertig' : 'Anordnen');
+    Object.keys(devices).forEach(function (k) { if (devices[k].ui) { updateTile(devices[k]); } });
     if (!on) { saveOrder(); }
   });
 
@@ -1369,7 +1438,7 @@ function semView(m, day) {
   function showThemeButton() {
     var dark = currentTheme() === 'dark';
     var b = el('btnTheme');
-    b.textContent = dark ? '☀ Hell' : '☾ Dunkel';
+    setButton(b, dark ? 'sun' : 'moon', dark ? 'Hell' : 'Dunkel');
     b.setAttribute('aria-label', dark ? 'Zum hellen Modus wechseln' : 'Zum dunklen Modus wechseln');
   }
   el('btnTheme').addEventListener('click', function () {
@@ -1439,6 +1508,19 @@ function semView(m, day) {
     }
   }
   el('btnExport').addEventListener('click', exportConfig);
+
+  /* Kopfzeile: Symbole, Uhrzeit und Datum */
+  el('brandIcon').appendChild(icon('camper'));
+  setButton(el('btnArrange'), 'arrange', 'Anordnen');
+  setButton(el('btnAdd'), 'add', 'Gerät hinzufügen');
+  setButton(el('btnImport'), 'imp', 'Import');
+  function showClock() {
+    var d = new Date();
+    el('clockTime').textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    try { el('clockDate').textContent = d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'short' }); } catch (e) { el('clockDate').textContent = ''; }
+  }
+  showClock();
+  setInterval(showClock, 10000);
 
   el('btnAdd').addEventListener('click', addDevice);
   el('btnCopy').addEventListener('click', copyLog);
